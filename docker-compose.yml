@@ -1,0 +1,76 @@
+# Local development stack: gateway + backing stores + demo upstreams +
+# observability. `make up` brings it all up; `make seed` loads demo tenants.
+name: tollgate
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tollgate
+      POSTGRES_PASSWORD: tollgate
+      POSTGRES_DB: tollgate
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tollgate"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  upstream-a:
+    build: { context: ., target: upstream }
+    environment:
+      BASE_DELAY_MS: "5"
+      JITTER_MS: "10"
+
+  upstream-b:
+    build: { context: ., target: upstream }
+    environment:
+      BASE_DELAY_MS: "20"
+      JITTER_MS: "30"
+
+  gateway:
+    build: { context: ., target: gateway }
+    environment:
+      DATABASE_URL: postgres://tollgate:tollgate@postgres:5432/tollgate
+      REDIS_ADDR: redis:6379
+      RATE_LIMITER: redis
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      TRACE_SAMPLE_RATIO: "0.2"
+      ACCESS_LOG_SAMPLE: "1"
+      LOG_LEVEL: info
+      # Shared provider credentials for routes using upstream auth injection
+      # (-auth-env). Set them in your host shell; empty is fine otherwise.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEMO_PROVIDER_KEY: ${DEMO_PROVIDER_KEY:-}
+    ports:
+      - "8080:8080"   # proxy
+      - "9090:9090"   # admin: /metrics /healthz /readyz /debug/pprof
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      upstream-a: { condition: service_started }
+      upstream-b: { condition: service_started }
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./deploy/monitoring/prometheus-local.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9091:9090"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "4318:4318"    # OTLP HTTP
