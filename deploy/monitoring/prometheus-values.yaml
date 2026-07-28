@@ -1,0 +1,26 @@
+# prometheus-community/prometheus values, trimmed for kind. The default
+# kubernetes-pods scrape job honours the prometheus.io/* pod annotations the
+# gateway sets, so no extra scrape config is needed.
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+
+server:
+  global:
+    scrape_interval: 5s      # fast enough for the p99 HPA to react
+    scrape_timeout: 4s       # must not exceed the interval
+    evaluation_interval: 5s
+  retention: 2d
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

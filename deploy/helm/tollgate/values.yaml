@@ -1,0 +1,68 @@
+image:
+  repository: tollgate
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+# "redis" = globally-correct distributed limiter.
+# "memory" = deliberately naive per-replica limiter, used only to demonstrate
+# why the distributed one is necessary (see README).
+limiter: redis
+
+redisAddr: redis.tollgate.svc.cluster.local:6379
+
+# Secret created by Terraform; the gateway reads DATABASE_URL from it.
+databaseUrlSecret:
+  name: postgres-credentials
+  key: database_url
+
+# Secrets for routes that inject upstream credentials (-auth-env). Each entry
+# becomes an env var sourced from a Kubernetes Secret:
+#   upstreamCredentials:
+#     ANTHROPIC_API_KEY: { secretName: llm-keys, key: anthropic }
+upstreamCredentials: {}
+
+env:
+  RATE_LIMIT_FAIL_OPEN: "true"
+  HEDGING_ENABLED: "true"
+  TRACE_SAMPLE_RATIO: "0.05"
+  ACCESS_LOG_SAMPLE: "100"   # 1-in-100 under load; RED metrics carry the signal
+  LOG_LEVEL: "info"
+  DRAIN_DELAY: "5s"          # readiness flips, endpoints propagate, then drain
+  SHUTDOWN_TIMEOUT: "30s"
+
+service:
+  type: NodePort
+  nodePort: 30080
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 512Mi
+
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 6
+  # Scale out when per-pod p99 latency exceeds this many milliseconds
+  # (served by prometheus-adapter as the custom pods metric
+  # tollgate_p99_latency_ms).
+  p99TargetMs: "150"
+
+pdb:
+  minAvailable: 2
+
+# Demo backends deployed alongside the gateway so the cluster is self-contained.
+demoUpstreams:
+  enabled: true
+  image: tollgate-upstream:dev
+  a:
+    baseDelayMs: "5"
+    jitterMs: "10"
+  b:
+    baseDelayMs: "20"
+    jitterMs: "30"
