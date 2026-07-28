@@ -1,0 +1,33 @@
+{{- if .Values.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    # Custom pods metric: per-pod p99 request latency in milliseconds,
+    # computed by prometheus-adapter from tollgate_request_duration_seconds
+    # histograms (see deploy/monitoring/adapter-values.yaml).
+    - type: Pods
+      pods:
+        metric:
+          name: tollgate_p99_latency_ms
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.hpa.p99TargetMs | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 120
+{{- end }}

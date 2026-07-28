@@ -1,0 +1,55 @@
+{{- if .Values.demoUpstreams.enabled }}
+{{- range $name, $cfg := dict "a" .Values.demoUpstreams.a "b" .Values.demoUpstreams.b }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upstream-{{ $name }}
+  labels:
+    app: upstream-{{ $name }}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: upstream-{{ $name }}
+  template:
+    metadata:
+      labels:
+        app: upstream-{{ $name }}
+    spec:
+      containers:
+        - name: upstream
+          image: {{ $.Values.demoUpstreams.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BASE_DELAY_MS
+              value: {{ $cfg.baseDelayMs | quote }}
+            - name: JITTER_MS
+              value: {{ $cfg.jitterMs | quote }}
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: "1"
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: upstream-{{ $name }}
+spec:
+  selector:
+    app: upstream-{{ $name }}
+  ports:
+    - port: 9000
+      targetPort: 9000
+{{- end }}
+{{- end }}

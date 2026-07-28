@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tollgate
+description: Multi-tenant API gateway with globally-correct distributed rate limiting
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
