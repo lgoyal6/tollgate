@@ -1,0 +1,28 @@
+# prometheus-adapter values: exposes per-pod p99 gateway latency as the
+# custom metric `tollgate_p99_latency_ms`, which the HPA targets.
+prometheus:
+  url: http://prometheus-server.monitoring.svc
+  port: 80
+
+logLevel: 2
+
+rules:
+  default: false
+  custom:
+    - seriesQuery: 'tollgate_request_duration_seconds_bucket{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: namespace }
+          pod: { resource: pod }
+      name:
+        matches: ^tollgate_request_duration_seconds_bucket$
+        as: "tollgate_p99_latency_ms"
+      # p99 per pod over a 2m window, in milliseconds. With no traffic
+      # histogram_quantile returns NaN and the HPA simply holds at
+      # minReplicas rather than scaling on garbage.
+      metricsQuery: 'histogram_quantile(0.99, sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (le, <<.GroupBy>>)) * 1000'
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
