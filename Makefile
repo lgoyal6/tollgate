@@ -90,7 +90,10 @@ kind-seed: ## Migrate + seed inside the kind cluster
 deploy: kind-up kind-load tf-apply monitoring-install helm-install ## Full kind deployment
 
 # ------------------------------------------------------------- load tests ---
-.PHONY: k6-baseline k6-correctness k6-fairness bench
+.PHONY: k6-baseline k6-correctness k6-fairness bench bench-limiter-cost
+
+bench-limiter-cost: ## Measure what the global (Redis) limiter costs vs per-replica vs none, incl. Redis-down behaviour (bench/METHODOLOGY.md)
+	bench/run.sh
 
 k6-baseline: ## Latency/throughput at three load levels
 	scripts/run-k6.sh baseline

@@ -62,6 +62,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 	case "memory":
 		logger.Warn("using NAIVE in-memory rate limiter: limits are per replica, not global")
 		g.limiter = ratelimit.NewMemoryLimiter()
+	case "none":
+		logger.Warn("rate limiting DISABLED: every request is admitted; benchmark floor only")
 	default:
 		g.redis = redis.NewClient(&redis.Options{
 			Addr:         cfg.RedisAddr,
@@ -99,7 +101,7 @@ func (g *Gateway) handler() http.Handler {
 	})
 
 	snapshots := g.watcher.Snapshot
-	return middleware.Chain(px,
+	mws := []middleware.Middleware{
 		middleware.Recover(g.logger),
 		middleware.RequestID(),
 		middleware.AccessLog(g.logger, g.cfg.AccessLogEnabled, g.cfg.AccessLogSample),
@@ -107,8 +109,14 @@ func (g *Gateway) handler() http.Handler {
 		middleware.Tracing(g.cfg.ServiceName),
 		middleware.Auth(snapshots, g.metrics),
 		middleware.Router(snapshots),
-		middleware.RateLimit(g.limiter, g.cfg.RateLimitFailOpen, g.metrics, g.logger),
-	)
+	}
+	// LimiterBackend "none" leaves g.limiter nil: the RateLimit middleware is
+	// not in the chain at all, which is the honest floor when measuring what
+	// admission control costs.
+	if g.limiter != nil {
+		mws = append(mws, middleware.RateLimit(g.limiter, g.cfg.RateLimitFailOpen, g.metrics, g.logger))
+	}
+	return middleware.Chain(px, mws...)
 }
 
 // adminHandler serves health, metrics and pprof on the admin port so none of
@@ -169,9 +177,13 @@ func (g *Gateway) Run(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	limiterName := "none"
+	if g.limiter != nil {
+		limiterName = g.limiter.Name()
+	}
 	errCh := make(chan error, 2)
 	go func() {
-		g.logger.Info("gateway listening", "addr", g.cfg.ListenAddr, "limiter", g.limiter.Name())
+		g.logger.Info("gateway listening", "addr", g.cfg.ListenAddr, "limiter", limiterName)
 		if err := mainSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("main listener: %w", err)
 		}

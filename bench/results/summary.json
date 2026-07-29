@@ -1,0 +1,574 @@
+{
+  "runs": {
+    "none": [
+      {
+        "arm": "none",
+        "run": 1,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.577,
+        "p95_ms": 1.261,
+        "p99_ms": 1.898,
+        "avg_ms": 0.692,
+        "min_ms": 0.043,
+        "max_ms": 43.376,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "none",
+        "run": 2,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.516,
+        "p95_ms": 1.051,
+        "p99_ms": 1.677,
+        "avg_ms": 0.575,
+        "min_ms": 0.021,
+        "max_ms": 20.156,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "none",
+        "run": 3,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.508,
+        "p95_ms": 1.048,
+        "p99_ms": 1.908,
+        "avg_ms": 0.616,
+        "min_ms": 0.18,
+        "max_ms": 64.423,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "none",
+        "run": 4,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.509,
+        "p95_ms": 1.036,
+        "p99_ms": 1.731,
+        "avg_ms": 0.564,
+        "min_ms": 0.161,
+        "max_ms": 10.695,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "none",
+        "run": 5,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.525,
+        "p95_ms": 1.133,
+        "p99_ms": 1.919,
+        "avg_ms": 0.621,
+        "min_ms": 0.155,
+        "max_ms": 38.814,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "none",
+        "run": 6,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.511,
+        "p95_ms": 1.104,
+        "p99_ms": 1.844,
+        "avg_ms": 0.566,
+        "min_ms": 0.171,
+        "max_ms": 8.591,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      }
+    ],
+    "memory": [
+      {
+        "arm": "memory",
+        "run": 1,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.513,
+        "p95_ms": 1.106,
+        "p99_ms": 1.982,
+        "avg_ms": 0.597,
+        "min_ms": 0.135,
+        "max_ms": 31.396,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "memory",
+        "run": 2,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.499,
+        "p95_ms": 1.031,
+        "p99_ms": 2.119,
+        "avg_ms": 0.723,
+        "min_ms": 0.17,
+        "max_ms": 111.473,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "memory",
+        "run": 3,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30000,
+        "achieved_rps": 1000,
+        "p50_ms": 0.568,
+        "p95_ms": 1.305,
+        "p99_ms": 1.981,
+        "avg_ms": 0.675,
+        "min_ms": 0.166,
+        "max_ms": 27.639,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "memory",
+        "run": 4,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.519,
+        "p95_ms": 1.095,
+        "p99_ms": 1.95,
+        "avg_ms": 0.636,
+        "min_ms": 0.156,
+        "max_ms": 58.767,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "memory",
+        "run": 5,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.509,
+        "p95_ms": 1.012,
+        "p99_ms": 1.769,
+        "avg_ms": 0.551,
+        "min_ms": 0.156,
+        "max_ms": 7.761,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "memory",
+        "run": 6,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.513,
+        "p95_ms": 1.045,
+        "p99_ms": 1.755,
+        "avg_ms": 0.564,
+        "min_ms": 0.178,
+        "max_ms": 18.61,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      }
+    ],
+    "redis": [
+      {
+        "arm": "redis",
+        "run": 1,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.524,
+        "p95_ms": 1.138,
+        "p99_ms": 6.166,
+        "avg_ms": 1.041,
+        "min_ms": 0.031,
+        "max_ms": 151.191,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis",
+        "run": 2,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.727,
+        "p95_ms": 1.506,
+        "p99_ms": 16.149,
+        "avg_ms": 1.334,
+        "min_ms": 0.188,
+        "max_ms": 151.969,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis",
+        "run": 3,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30000,
+        "achieved_rps": 1000,
+        "p50_ms": 0.705,
+        "p95_ms": 1.116,
+        "p99_ms": 1.826,
+        "avg_ms": 0.744,
+        "min_ms": 0.225,
+        "max_ms": 11.296,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis",
+        "run": 4,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.713,
+        "p95_ms": 1.224,
+        "p99_ms": 2.069,
+        "avg_ms": 0.755,
+        "min_ms": 0.192,
+        "max_ms": 9.024,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis",
+        "run": 5,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.574,
+        "p95_ms": 0.81,
+        "p99_ms": 1.41,
+        "avg_ms": 0.593,
+        "min_ms": 0.205,
+        "max_ms": 13.261,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis",
+        "run": 6,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30002,
+        "achieved_rps": 1000.1,
+        "p50_ms": 0.7,
+        "p95_ms": 1.174,
+        "p99_ms": 2.125,
+        "avg_ms": 0.755,
+        "min_ms": 0.187,
+        "max_ms": 36.45,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      }
+    ],
+    "redis-sw": [
+      {
+        "arm": "redis-sw",
+        "run": 1,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.654,
+        "p95_ms": 1.167,
+        "p99_ms": 1.883,
+        "avg_ms": 0.69,
+        "min_ms": 0.214,
+        "max_ms": 12.562,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis-sw",
+        "run": 2,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30002,
+        "achieved_rps": 1000.1,
+        "p50_ms": 0.721,
+        "p95_ms": 1.323,
+        "p99_ms": 2.097,
+        "avg_ms": 0.753,
+        "min_ms": 0.189,
+        "max_ms": 11.391,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis-sw",
+        "run": 3,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.565,
+        "p95_ms": 0.784,
+        "p99_ms": 1.309,
+        "avg_ms": 0.562,
+        "min_ms": 0.192,
+        "max_ms": 9.145,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis-sw",
+        "run": 4,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.575,
+        "p95_ms": 0.801,
+        "p99_ms": 1.562,
+        "avg_ms": 0.703,
+        "min_ms": 0.04,
+        "max_ms": 71.907,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis-sw",
+        "run": 5,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30001,
+        "achieved_rps": 1000,
+        "p50_ms": 0.669,
+        "p95_ms": 1.135,
+        "p99_ms": 2.469,
+        "avg_ms": 0.814,
+        "min_ms": 0.222,
+        "max_ms": 60.528,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      },
+      {
+        "arm": "redis-sw",
+        "run": 6,
+        "offered_rps": 1000,
+        "warmup_s": 10,
+        "measure_s": 30,
+        "requests": 30003,
+        "achieved_rps": 1000.1,
+        "p50_ms": 0.728,
+        "p95_ms": 1.242,
+        "p99_ms": 2.197,
+        "avg_ms": 0.825,
+        "min_ms": 0.211,
+        "max_ms": 45.193,
+        "error_rate": 0,
+        "dropped_iterations": 0
+      }
+    ]
+  },
+  "medians": {
+    "none": {
+      "p50_ms": 0.5135000000000001,
+      "p95_ms": 1.0775000000000001,
+      "p99_ms": 1.871,
+      "achieved_rps": 1000.0
+    },
+    "memory": {
+      "p50_ms": 0.513,
+      "p95_ms": 1.0699999999999998,
+      "p99_ms": 1.9655,
+      "achieved_rps": 1000.0
+    },
+    "redis": {
+      "p50_ms": 0.7024999999999999,
+      "p95_ms": 1.156,
+      "p99_ms": 2.097,
+      "achieved_rps": 1000.0
+    },
+    "redis-sw": {
+      "p50_ms": 0.6615,
+      "p95_ms": 1.151,
+      "p99_ms": 1.99,
+      "achieved_rps": 1000.0
+    }
+  },
+  "spread": {
+    "none": {
+      "p50_ms": [
+        0.508,
+        0.577
+      ],
+      "p95_ms": [
+        1.036,
+        1.261
+      ],
+      "p99_ms": [
+        1.677,
+        1.919
+      ],
+      "achieved_rps": [
+        1000,
+        1000
+      ]
+    },
+    "memory": {
+      "p50_ms": [
+        0.499,
+        0.568
+      ],
+      "p95_ms": [
+        1.012,
+        1.305
+      ],
+      "p99_ms": [
+        1.755,
+        2.119
+      ],
+      "achieved_rps": [
+        1000,
+        1000
+      ]
+    },
+    "redis": {
+      "p50_ms": [
+        0.524,
+        0.727
+      ],
+      "p95_ms": [
+        0.81,
+        1.506
+      ],
+      "p99_ms": [
+        1.41,
+        16.149
+      ],
+      "achieved_rps": [
+        1000,
+        1000.1
+      ]
+    },
+    "redis-sw": {
+      "p50_ms": [
+        0.565,
+        0.728
+      ],
+      "p95_ms": [
+        0.784,
+        1.323
+      ],
+      "p99_ms": [
+        1.309,
+        2.469
+      ],
+      "achieved_rps": [
+        1000,
+        1000.1
+      ]
+    }
+  },
+  "deltas_of_medians_ms": {
+    "redis-memory": {
+      "p50_ms": 0.1894999999999999,
+      "p95_ms": 0.08600000000000008,
+      "p99_ms": 0.13149999999999995
+    },
+    "redis-sw-memory": {
+      "p50_ms": 0.14849999999999997,
+      "p95_ms": 0.08100000000000018,
+      "p99_ms": 0.024499999999999966
+    },
+    "memory-none": {
+      "p50_ms": -0.000500000000000056,
+      "p95_ms": -0.007500000000000284,
+      "p99_ms": 0.09450000000000003
+    },
+    "redis-none": {
+      "p50_ms": 0.18899999999999983,
+      "p95_ms": 0.07849999999999979,
+      "p99_ms": 0.22599999999999998
+    }
+  },
+  "paired_redis_minus_memory": {
+    "per_round_p50_ms": [
+      0.011,
+      0.228,
+      0.137,
+      0.194,
+      0.065,
+      0.187
+    ],
+    "median_p50_ms": 0.162
+  },
+  "invalid_runs": [],
+  "check_duration_mean_ms": {
+    "redis-sw-run2": 0.15909120172478458,
+    "redis-run5": 0.14965362597805162,
+    "redis-run4": 0.15749757505687023,
+    "redis-sw-run3": 0.1862886491850794,
+    "memory-run6": 0.0006251848861335343,
+    "redis-sw-run4": 0.15895273531985163,
+    "redis-run3": 0.15715400512474395,
+    "memory-run1": 0.0006445768673132742,
+    "redis-run2": 0.2395200989925756,
+    "redis-sw-run5": 0.1833789068069894,
+    "redis-run1": 0.2110301234719126,
+    "redis-sw-run6": 0.17439151652252174,
+    "memory-run3": 0.0007962771111444572,
+    "memory-run2": 0.0012610220483464075,
+    "memory-run5": 0.000629111141664373,
+    "redis-sw-run1": 0.14755173476989267,
+    "redis-run6": 0.16126085580720997,
+    "memory-run4": 0.0007044119941004528
+  }
+}
