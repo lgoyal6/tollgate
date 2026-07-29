@@ -1,0 +1,79 @@
+# Benchmark stack for `make bench-limiter-cost`: what does the global (Redis)
+# rate limiter cost per request, versus a per-replica in-process limiter,
+# versus no limiter at all?
+#
+# Deliberately separate from the dev docker-compose.yml so the dev stack and
+# its data are never touched. Controls that matter for the measurement:
+#
+#   - upstream: the echo server with ZERO added latency (provider is mocked,
+#     so upstream variance cannot pollute the arm-to-arm delta)
+#   - gateway: 3 replicas in every arm; only RATE_LIMITER differs
+#     (BENCH_LIMITER env: redis | memory | none)
+#   - lb: nginx round-robins the 3 replicas; resolved at startup, so
+#     bench/run.sh restarts it whenever the gateways are recreated
+#   - access log off and trace sampling 0 in ALL arms, to cut run-to-run noise
+#   - k6 runs in a one-shot container on this same network (no host<->VM
+#     port-proxy hop in the measured path); see bench/run.sh
+name: tollgate-bench
+
+networks:
+  default:
+    name: tollgate-bench
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tollgate
+      POSTGRES_PASSWORD: tollgate
+      POSTGRES_DB: tollgate
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tollgate"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  upstream:
+    build: { context: .., target: upstream }
+    environment:
+      BASE_DELAY_MS: "0"
+      JITTER_MS: "0"
+
+  gateway:
+    build: { context: .., target: gateway }
+    deploy:
+      replicas: 3
+    environment:
+      DATABASE_URL: postgres://tollgate:tollgate@postgres:5432/tollgate
+      REDIS_ADDR: redis:6379
+      RATE_LIMITER: ${BENCH_LIMITER:-redis}
+      ACCESS_LOG: "false"
+      TRACE_SAMPLE_RATIO: "0"
+      LOG_LEVEL: info
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      upstream: { condition: service_started }
+
+  lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18080:8080" # convenience only; the measured path stays in-network
+    depends_on:
+      gateway: { condition: service_started }
+
+  # Long-lived busybox shell on the bench network: readiness polls and
+  # /metrics scrapes against the (distroless, shell-less) gateway replicas.
+  helper:
+    image: alpine:3.20
+    command: ["sleep", "infinity"]

@@ -17,9 +17,10 @@ type Config struct {
 	DatabaseURL string
 	RedisAddr   string
 
-	// LimiterBackend selects "redis" (correct across replicas) or "memory"
+	// LimiterBackend selects "redis" (correct across replicas), "memory"
 	// (deliberately naive per-replica limiter, kept to demonstrate why the
-	// distributed one is needed).
+	// distributed one is needed), or "none" (rate limiting disabled entirely;
+	// exists as the benchmark floor for measuring what limiting costs).
 	LimiterBackend    string
 	RateLimitFailOpen bool
 
@@ -65,8 +66,8 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.LimiterBackend != "redis" && cfg.LimiterBackend != "memory" {
-		return Config{}, fmt.Errorf("RATE_LIMITER must be \"redis\" or \"memory\", got %q", cfg.LimiterBackend)
+	if cfg.LimiterBackend != "redis" && cfg.LimiterBackend != "memory" && cfg.LimiterBackend != "none" {
+		return Config{}, fmt.Errorf("RATE_LIMITER must be \"redis\", \"memory\" or \"none\", got %q", cfg.LimiterBackend)
 	}
 
 	var err error

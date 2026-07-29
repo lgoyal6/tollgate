@@ -1,0 +1,237 @@
+tollgate bench: the cost of global rate-limit correctness
+==========================================================
+generated: 2026-07-29 03:48 UTC by bench/run.sh (make bench-limiter-cost)
+git: 0ab0e3f (dirty)
+host: Apple M3 Pro, 11 cores; macOS 26.5.2
+docker: 29.4.0, build 9d7ad9f; VM: 11 cpus, 8321568768 bytes
+images: redis 7.4.10, postgres:16-alpine, nginx:1.27-alpine; gateway built from golang:1.26-alpine
+k6: k6 v2.1.0 (commit/83a87a41e2, go1.26.4, linux/arm64) (in-network container; no host<->VM port proxy in measured path)
+topology: k6 -> nginx -> 3 gateway replicas -> mock upstream (0ms delay, 0ms jitter)
+load: constant-arrival-rate 1000 rps; 10s warmup DISCARDED + 30s measured; 6 runs/arm, arms interleaved per round
+gateway env (all arms): ACCESS_LOG=false TRACE_SAMPLE_RATIO=0; only RATE_LIMITER differs
+
+SECTION 1 — bare Redis RTT, measured from a sibling container on the same
+docker network (the gateway's exact network path). Theoretical floor for
+the redis-arm delta; anything above this is client/gateway code.
+
+-- redis-cli --latency, 15s (columns: min max avg ms, samples):
+0 3 0.44 81
+
+-- redis-benchmark PING, 1 connection, 20k requests:
+Summary:
+  throughput summary: 26315.79 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+        0.035     0.008     0.039     0.047     0.063     2.719
+
+
+-- redis-benchmark EVALSHA tokenbucket.lua, 1 connection, 20k requests
+   (script execution included — the exact hot-path command):
+Summary:
+  throughput summary: 21276.60 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+        0.044     0.016     0.047     0.063     0.071    10.743
+
+SECTION 2 — raw per-run numbers (k6, measure window only; warmup discarded)
+arm       run   p50_ms   p95_ms   p99_ms   avg_ms    max_ms      rps      err dropped
+none        1    0.577    1.261    1.898    0.692    43.376   1000.0  0.00000       0
+none        2    0.516    1.051    1.677    0.575    20.156   1000.0  0.00000       0
+none        3    0.508    1.048    1.908    0.616    64.423   1000.0  0.00000       0
+none        4    0.509    1.036    1.731    0.564    10.695   1000.0  0.00000       0
+none        5    0.525    1.133    1.919    0.621    38.814   1000.0  0.00000       0
+none        6    0.511    1.104    1.844    0.566     8.591   1000.0  0.00000       0
+memory      1    0.513    1.106    1.982    0.597    31.396   1000.0  0.00000       0
+memory      2    0.499    1.031    2.119    0.723   111.473   1000.0  0.00000       0
+memory      3    0.568    1.305    1.981    0.675    27.639   1000.0  0.00000       0
+memory      4    0.519    1.095    1.950    0.636    58.767   1000.0  0.00000       0
+memory      5    0.509    1.012    1.769    0.551     7.761   1000.0  0.00000       0
+memory      6    0.513    1.045    1.755    0.564    18.610   1000.0  0.00000       0
+redis       1    0.524    1.138    6.166    1.041   151.191   1000.0  0.00000       0
+redis       2    0.727    1.506   16.149    1.334   151.969   1000.0  0.00000       0
+redis       3    0.705    1.116    1.826    0.744    11.296   1000.0  0.00000       0
+redis       4    0.713    1.224    2.069    0.755     9.024   1000.0  0.00000       0
+redis       5    0.574    0.810    1.410    0.593    13.261   1000.0  0.00000       0
+redis       6    0.700    1.174    2.125    0.755    36.450   1000.1  0.00000       0
+redis-sw    1    0.654    1.167    1.883    0.690    12.562   1000.0  0.00000       0
+redis-sw    2    0.721    1.323    2.097    0.753    11.391   1000.1  0.00000       0
+redis-sw    3    0.565    0.784    1.309    0.562     9.145   1000.0  0.00000       0
+redis-sw    4    0.575    0.801    1.562    0.703    71.907   1000.0  0.00000       0
+redis-sw    5    0.669    1.135    2.469    0.814    60.528   1000.0  0.00000       0
+redis-sw    6    0.728    1.242    2.197    0.825    45.193   1000.1  0.00000       0
+
+SECTION 3 — medians across runs (spread = min..max across runs)
+  none    (limiter bypassed — floor)   [6 runs]
+    p50    0.514 (0.508..0.577) ms   p95    1.078 (1.036..1.261) ms
+    p99    1.871 (1.677..1.919) ms   throughput   1000.0 (1000.0..1000.0) rps
+  memory  (per-replica, no Redis in path)   [6 runs]
+    p50    0.513 (0.499..0.568) ms   p95    1.070 (1.012..1.305) ms
+    p99    1.966 (1.755..2.119) ms   throughput   1000.0 (1000.0..1000.0) rps
+  redis   (global, atomic Lua — default)   [6 runs]
+    p50    0.702 (0.524..0.727) ms   p95    1.156 (0.810..1.506) ms
+    p99    2.097 (1.410..16.149) ms   throughput   1000.0 (1000.0..1000.1) rps
+  redis-sw (global, sliding-window script)   [6 runs]
+    p50    0.661 (0.565..0.728) ms   p95    1.151 (0.784..1.323) ms
+    p99    1.990 (1.309..2.469) ms   throughput   1000.0 (1000.0..1000.1) rps
+
+  deltas of medians:
+  redis - memory (THE cost of the global RTT)  p50  +0.189 ms   p95  +0.086 ms   p99  +0.131 ms
+  redis-sw - memory (sliding-window variant)   p50  +0.148 ms   p95  +0.081 ms   p99  +0.024 ms
+  memory - none (limiter middleware + math)    p50  -0.001 ms   p95  -0.008 ms   p99  +0.095 ms
+  redis - none (global limiting vs nothing)    p50  +0.189 ms   p95  +0.078 ms   p99  +0.226 ms
+
+  paired per-round p50 delta (redis - memory), same-round pairs: [0.011, 0.228, 0.137, 0.194, 0.065, 0.187]
+  median paired p50 delta: +0.162 ms
+
+SECTION 4 — in-gateway cross-check: mean limiter-check duration
+  (tollgate_ratelimit_check_duration_seconds, sum/count across the 3
+  replicas, scraped after each run; redis-sw is the within-deployment delta)
+    memory    mean check   0.001 ms (runs: 0.001, 0.001, 0.001, 0.001, 0.001, 0.001)
+    redis     mean check   0.159 ms (runs: 0.211, 0.240, 0.157, 0.157, 0.150, 0.161)
+    redis-sw  mean check   0.167 ms (runs: 0.148, 0.159, 0.186, 0.159, 0.183, 0.174)
+
+SECTION 5 — Redis-unavailable behaviour (one run, timestamps epoch-second resolution)
+  offered load: metered tenant (sliding window, limit 300/s), constant arrival
+  t_kill      = 1785296827.2 (docker compose kill redis)
+  t_startcmd  = 1785296857.6 (docker compose start redis, +30.4s)
+  t_pong      = 1785296858.0 (redis answers PING again, +0.4s after start)
+
+  healthy (pre-kill, first 5s skipped): 18225 reqs over 31s
+    200 9065 (49.7%)   429 9160 (50.3%)   503 0   other-5xx 0   transport-errors 0
+    p50 0.707 ms   p99 2.148 ms   max 28.937 ms
+  outage (kill -> redis PONG): 18942 reqs over 31s
+    200 18942 (100.0%)   429 0 (0.0%)   503 0   other-5xx 0   transport-errors 0
+    p50 84.209 ms   p99 706.009 ms   max 2571.569 ms
+  recovered (after redis PONG): 25906 reqs over 44s
+    200 12881 (49.7%)   429 13025 (50.3%)   503 0   other-5xx 0   transport-errors 0
+    p50 0.692 ms   p99 2.109 ms   max 48.838 ms
+
+  FAIL-OPEN observed: during the outage every request was admitted (200),
+  zero 429s and zero 503s — the limit silently ceased to exist.
+
+  recovery: first 429 after redis PONG at second 1785296859 (= 1s after PONG, 1s bin resolution)
+  first seconds after recovery (admitted-per-second vs limit 300):
+    t+32s: 200=251 429=349 err=0
+    t+33s: 200=298 429=302 err=0
+    t+34s: 200=298 429=302 err=0
+    t+35s: 200=298 429=302 err=0
+    t+36s: 200=298 429=302 err=0
+
+  per-second timeline (offset from kill; negative = before kill):
+   t-kill  total   200   429   503   5xx   err    p50ms     p99ms
+      -35    496   300   196     0     0     0     0.54      2.30
+      -34    600   300   300     0     0     0     0.64      2.23
+      -33    599   300   299     0     0     0     0.70      2.33
+      -32    600   300   300     0     0     0     0.72      2.13
+      -31    599   300   299     0     0     0     0.68      2.24
+      -30    601   300   301     0     0     0     0.72      2.47
+      -29    600   300   300     0     0     0     0.73      1.72
+      -28    600   300   300     0     0     0     0.71      1.82
+      -27    601   300   301     0     0     0     0.68      1.94
+      -26    599   300   299     0     0     0     0.74      2.06
+      -25    600   300   300     0     0     0     0.69      1.70
+      -24    599   300   299     0     0     0     0.72      1.76
+      -23    602   300   302     0     0     0     0.71      2.19
+      -22    600   300   300     0     0     0     0.74      2.04
+      -21    599   300   299     0     0     0     0.75      1.90
+      -20    600   300   300     0     0     0     0.72      1.96
+      -19    600   300   300     0     0     0     0.72      1.65
+      -18    601   300   301     0     0     0     0.81      1.91
+      -17    599   300   299     0     0     0     0.73      2.01
+      -16    599   300   299     0     0     0     0.71      2.26
+      -15    601   300   301     0     0     0     0.71      1.94
+      -14    600   300   300     0     0     0     0.72      2.19
+      -13    600   300   300     0     0     0     0.70      2.05
+      -12    601   300   301     0     0     0     0.71      1.85
+      -11    599   300   299     0     0     0     0.69      1.86
+      -10    600   300   300     0     0     0     0.71      2.04
+       -9    600   300   300     0     0     0     0.69      1.80
+       -8    600   300   300     0     0     0     0.73     17.02
+       -7    600   300   300     0     0     0     0.61      2.33
+       -6    600   300   300     0     0     0     0.65      2.08
+       -5    600   300   300     0     0     0     0.55      2.12
+       -4    599   300   299     0     0     0     0.72      2.16
+       -3    600   300   300     0     0     0     0.71      2.37
+       -2    600   300   300     0     0     0     0.72      2.49
+       -1    601   300   301     0     0     0     0.65      2.35
+        0    224    65   159     0     0     0     0.47      3.13  <- kill
+        1    879   879     0     0     0     0   237.46   1145.49
+        2    615   615     0     0     0     0    84.46   2520.81
+        3    598   598     0     0     0     0    83.74    130.16
+        4    601   601     0     0     0     0    84.21    125.67
+        5    596   596     0     0     0     0    83.29    126.20
+        6    598   598     0     0     0     0    84.69    126.79
+        7    608   608     0     0     0     0    82.41    128.38
+        8    599   599     0     0     0     0    82.37    124.87
+        9    600   600     0     0     0     0    83.73    126.34
+       10    600   600     0     0     0     0    83.05    128.69
+       11    598   598     0     0     0     0    84.29    127.39
+       12    598   598     0     0     0     0    83.56    126.83
+       13    606   606     0     0     0     0    84.36    127.23
+       14    600   600     0     0     0     0    84.34    125.72
+       15    595   595     0     0     0     0    81.70    124.27
+       16    604   604     0     0     0     0    82.61    125.13
+       17    597   597     0     0     0     0    81.84    126.94
+       18    597   597     0     0     0     0    86.01    124.41
+       19    602   602     0     0     0     0    82.38    125.18
+       20    599   599     0     0     0     0    84.59    125.45
+       21    604   604     0     0     0     0    82.79    129.68
+       22    595   595     0     0     0     0    86.50    127.57
+       23    607   607     0     0     0     0    84.21    127.05
+       24    599   599     0     0     0     0    83.73    124.96
+       25    599   599     0     0     0     0    81.26    126.86
+       26    595   595     0     0     0     0    84.33    122.42
+       27    601   601     0     0     0     0    82.40    125.92
+       28    597   597     0     0     0     0    86.33    125.47
+       29    603   603     0     0     0     0    82.83    127.04
+       30    602   602     0     0     0     0    83.04    127.67
+       31    650   650     0     0     0     0    66.29    125.50  <- redis back
+       32    600   251   349     0     0     0     0.62      1.67
+       33    600   298   302     0     0     0     0.64      1.90
+       34    600   298   302     0     0     0     0.70      1.80
+       35    600   298   302     0     0     0     0.69      1.96
+       36    600   298   302     0     0     0     0.72      2.32
+       37    600   298   302     0     0     0     0.68      1.65
+       38    600   298   302     0     0     0     0.71      2.16
+       39    600   298   302     0     0     0     0.73      1.99
+       40    600   298   302     0     0     0     0.72      1.90
+       41    601   299   302     0     0     0     0.80      1.88
+       42    599   298   301     0     0     0     0.74      2.20
+       43    600   298   302     0     0     0     0.73      1.94
+       44    600   298   302     0     0     0     0.80      1.80
+       45    601   299   302     0     0     0     0.67      1.64
+       46    599   297   302     0     0     0     0.72      2.14
+       47    601   299   302     0     0     0     0.63      1.98
+       48    599   297   302     0     0     0     0.79      2.08
+       49    600   298   302     0     0     0     0.72      1.81
+       50    600   299   301     0     0     0     0.76      2.35
+       51    599   297   302     0     0     0     0.64      2.17
+       52    601   299   302     0     0     0     0.72     33.18
+       53    600   298   302     0     0     0     0.68      2.22
+       54    600   299   301     0     0     0     0.68      1.87
+       55    600   298   302     0     0     0     0.58      1.78
+       56    601   298   303     0     0     0     0.71      2.68
+       57    599   298   301     0     0     0     0.58      2.12
+       58    600   299   301     0     0     0     0.70      1.97
+       59    600   298   302     0     0     0     0.51      2.07
+       60    599   298   301     0     0     0     0.73      1.80
+       61    602   300   302     0     0     0     0.50      2.20
+       62    600   299   301     0     0     0     0.72      2.29
+       63    599   297   302     0     0     0     0.65      2.61
+       64    599   297   302     0     0     0     0.74      1.80
+       65    601   300   301     0     0     0     0.58      2.03
+       66    599   298   301     0     0     0     0.73      1.69
+       67    601   300   301     0     0     0     0.65      1.82
+       68    601   300   301     0     0     0     0.72      1.97
+       69    599   297   302     0     0     0     0.61      1.97
+       70    600   298   302     0     0     0     0.70      2.50
+       71    601   300   301     0     0     0     0.51      1.67
+       72    599   298   301     0     0     0     0.58      1.38
+       73    601   299   302     0     0     0     0.52      1.89
+       74    600   298   302     0     0     0     0.67      1.88
+       75    105   101     4     0     0     0     0.55      5.31
+
+  gateway-side evidence: 'rate limiter check failed' log lines: 18685;
+  tollgate_ratelimit_errors_total summed across replicas: 18685
+  (config: RATE_LIMIT_FAIL_OPEN unset -> default true; middleware admits on
+  limiter error. Source: internal/middleware/middleware.go RateLimit())
