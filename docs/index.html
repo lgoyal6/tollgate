@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tollgate: one rate limit, three replicas, live in your tab</title>
+<meta name="description" content="Tollgate's real admission-control code compiled to WebAssembly. Watch per-replica rate limiting admit 3x the policy while a shared store holds the ceiling exactly.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='14' height='2' fill='%23d95f4c'/%3E%3Crect x='2' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='6.5' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='11' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='6.5' y='1' width='3' height='5' fill='%23c48134'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="mast">
+  <div class="mast-title">
+    <h1>tollgate</h1>
+    <span class="led" id="led" data-state="off"></span>
+    <span class="led-label" id="led-label">loading engine…</span>
+  </div>
+  <p class="thesis">A multi-tenant API gateway for shared LLM keys. This page runs the
+  gateway's real admission-control code, the same token bucket and sliding window the
+  Redis Lua scripts implement, on a virtual clock. It exists to prove one claim: rate
+  limiting per replica is quietly wrong, and a shared store is what makes a limit a limit.</p>
+</header>
+
+<main id="panel" hidden>
+
+  <section class="card">
+    <h2 class="eyebrow">the experiment</h2>
+    <p class="hint">One tenant, one policy, N gateway replicas behind a round-robin load
+    balancer. Left gateway: each replica counts on its own. Right gateway: every replica
+    checks one shared store before admitting.</p>
+    <div class="knobs">
+      <label>algorithm
+        <select id="algo" class="mono">
+          <option value="token_bucket">token bucket</option>
+          <option value="sliding_window">sliding window log</option>
+        </select>
+      </label>
+      <label>policy ceiling <b id="rate-val" class="mono">300/s</b>
+        <input type="range" id="rate" min="50" max="1000" value="300" step="50">
+      </label>
+      <label>replicas <b id="replicas-val" class="mono">3</b>
+        <input type="range" id="replicas" min="2" max="8" value="3" step="1">
+      </label>
+      <label>offered load <b id="offered-val" class="mono">900/s</b>
+        <input type="range" id="offered" min="100" max="3000" value="900" step="100">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-copper" id="go">Run 30 simulated seconds</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="race-head">
+      <h2 class="eyebrow">admitted requests per second</h2>
+      <div class="legend mono">
+        <span><i class="swatch steel"></i>per-replica counters</span>
+        <span><i class="swatch copper"></i>one shared store</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="0 0 720 300" role="img" aria-label="admitted requests per second for both limiter designs against the policy ceiling"></svg>
+      <div class="tooltip mono" id="tooltip" hidden></div>
+    </div>
+    <p class="hint dim">The dashed line is the policy. Everything a curve admits above it
+    is quota the tenant never bought: on a shared LLM key, that's someone's real money.</p>
+  </section>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="card">
+    <div class="verdict mono" id="verdict">run it: the simulation uses the shipped limiter code, not a model of it.</div>
+  </section>
+
+  <footer class="foot">
+    <p>The production gateway holds a shared 300 req/s ceiling exact across 3 Kubernetes
+    replicas by making check-and-decrement atomic in Redis Lua, and sustains 2,000 req/s
+    with zero errors at p99 46ms under load, with per-upstream circuit breakers and
+    jittered-backoff retries.</p>
+    <p class="dim">Built by <a href="https://lakshgoyal.com">Laksh Goyal</a> ·
+    <a href="https://github.com/lgoyal6/tollgate">github.com/lgoyal6/tollgate</a></p>
+  </footer>
+
+</main>
+
+<script src="demo/wasm_exec.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
