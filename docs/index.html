@@ -3,86 +3,161 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tollgate: one rate limit, three replicas, live in your tab</title>
-<meta name="description" content="Tollgate's real admission-control code compiled to WebAssembly. Watch per-replica rate limiting admit 3x the policy while a shared store holds the ceiling exactly.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='14' height='2' fill='%23d95f4c'/%3E%3Crect x='2' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='6.5' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='11' y='10' width='3' height='5' fill='%234f9ae0'/%3E%3Crect x='6.5' y='1' width='3' height='5' fill='%23c48134'/%3E%3C/svg%3E">
+<title>tollgate — a rate limit you can try to cheat</title>
+<meta name="description" content="A multi-tenant API gateway for shared LLM keys, live in your tab: watch per-replica rate limiting admit 3x the policy while a shared store holds the ceiling exactly.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="tollgate — a rate limit you can try to cheat">
+<meta property="og:description" content="The gateway's real admission-control code on a virtual clock: rate limiting per replica is quietly wrong, and a shared store is what makes a limit a limit.">
+<meta property="og:url" content="https://lgoyal6.github.io/tollgate/">
+<meta property="og:image" content="https://lgoyal6.github.io/tollgate/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='14' height='2' fill='%231f4d33'/%3E%3Crect x='2' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='6.5' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='11' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='6.5' y='1' width='3' height='5' fill='%231f4d33'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header class="mast">
-  <div class="mast-title">
-    <h1>tollgate</h1>
-    <span class="led" id="led" data-state="off"></span>
-    <span class="led-label" id="led-label">loading engine…</span>
+<header class="gut">
+  <div>
+    <div class="eyebrow">multi-tenant api gateway &middot; go &middot; redis-lua rate limiting &middot;
+      <span class="led-label" id="led-label">loading engine&hellip;</span></div>
+    <h1>tollgate<span>.</span></h1>
+    <p class="thesis">A gateway for teams sharing one LLM API key: everyone gets a personal key
+    and a budget, the real key never leaves the gateway. That only works if the limit is a
+    limit, and <b>rate limiting per replica is quietly wrong</b>. The admission-control code
+    below is the gateway's own, the same algorithms its Redis Lua scripts implement, compiled
+    to WebAssembly on a virtual clock.</p>
+    <div class="hdr-links">
+      <a href="https://github.com/lgoyal6/tollgate">github.com/lgoyal6/tollgate</a>
+      <a href="#bill">skip to the bill &darr;</a>
+    </div>
   </div>
-  <p class="thesis">A multi-tenant API gateway for shared LLM keys. This page runs the
-  gateway's real admission-control code, the same token bucket and sliding window the
-  Redis Lua scripts implement, on a virtual clock. It exists to prove one claim: rate
-  limiting per replica is quietly wrong, and a shared store is what makes a limit a limit.</p>
+  <div>
+    <div class="stats">
+      <div class="stat k1"><span class="n">2.9&times;</span><span class="l">the policy ceiling admitted by per-replica counters across 3 replicas (k6, measured)</span></div>
+      <div class="stat"><span class="n">9,000<small>/9,000</small></span><span class="l">exact with the Redis-Lua shared store at the same ceiling</span></div>
+      <div class="stat"><span class="n">46<small>ms</small></span><span class="l">p99 at a sustained 2,000 req/s, zero errors</span></div>
+    </div>
+    <p class="stats-note">measured against the kind cluster with k6 &middot; docs/ratelimit-proof.md &middot; suites in loadtest/</p>
+  </div>
 </header>
 
-<main id="panel" hidden>
-
-  <section class="card">
-    <h2 class="eyebrow">the experiment</h2>
-    <p class="hint">One tenant, one policy, N gateway replicas behind a round-robin load
-    balancer. Left gateway: each replica counts on its own. Right gateway: every replica
-    checks one shared store before admitting.</p>
-    <div class="knobs">
+<section id="experiment" class="gut">
+  <div class="sec-bar">
+    <span class="no">01</span><h2>Run the experiment</h2>
+    <span class="lede">one tenant, one policy, N replicas behind a round-robin balancer; only the counter's home differs</span>
+  </div>
+  <div class="bench">
+    <div class="toolbar">
       <label>algorithm
-        <select id="algo" class="mono">
+        <select id="algo">
           <option value="token_bucket">token bucket</option>
           <option value="sliding_window">sliding window log</option>
         </select>
       </label>
-      <label>policy ceiling <b id="rate-val" class="mono">300/s</b>
-        <input type="range" id="rate" min="50" max="1000" value="300" step="50">
+      <label>ceiling <b id="rate-val">300/s</b>
+        <input type="range" id="rate" min="50" max="1000" value="300" step="50" aria-label="policy ceiling per second">
       </label>
-      <label>replicas <b id="replicas-val" class="mono">3</b>
-        <input type="range" id="replicas" min="2" max="8" value="3" step="1">
+      <label>replicas <b id="replicas-val">3</b>
+        <input type="range" id="replicas" min="2" max="8" value="3" step="1" aria-label="gateway replicas">
       </label>
-      <label>offered load <b id="offered-val" class="mono">900/s</b>
-        <input type="range" id="offered" min="100" max="3000" value="900" step="100">
+      <label>offered <b id="offered-val">2,000/s</b>
+        <input type="range" id="offered" min="100" max="3000" value="2000" step="100" aria-label="offered load per second">
       </label>
+      <button class="btn btn-ox" id="go" disabled>Run 30 seconds</button>
     </div>
-    <div class="btn-row">
-      <button class="btn btn-copper" id="go">Run 30 simulated seconds</button>
+    <svg id="chart" viewBox="0 0 1200 380" role="img" aria-label="admitted requests per second for both limiter designs against the policy ceiling"></svg>
+  </div>
+  <p class="fig"><b>Fig. 1.</b> Admitted requests per second over 30 simulated seconds. The
+  dotted line is the offered load; the fine rule is the policy. The dashed gateway lets every
+  replica count on its own, so each one happily admits a full ceiling; the solid gateway makes
+  every replica check one shared store before admitting, the exact check the Redis Lua scripts
+  perform in production. <i>The solid line's first second sits above the ceiling by design:
+  that's the token bucket honoring its configured burst, and the policy bound accounts for
+  it.</i></p>
+</section>
+
+<section id="bill" class="gut">
+  <div class="sec-bar">
+    <span class="no">02</span><h2>Read the bill</h2>
+    <span class="lede">on a shared LLM key, over-admission is not an abstraction; it is someone's money</span>
+  </div>
+  <div class="measure-grid">
+    <div>
+      <table class="results" aria-label="experiment totals">
+        <caption>Table 1. The experiment, 30 simulated seconds.</caption>
+        <tbody>
+          <tr><td>requests offered</td><td id="b-offered">&ndash;</td></tr>
+          <tr><td>policy bound for the horizon (ceiling &times; 30s + burst)</td><td id="b-bound">&ndash;</td></tr>
+          <tr><td>admitted, per-replica counters</td><td id="b-per">&ndash;</td></tr>
+          <tr><td>admitted, one shared store</td><td class="ox" id="b-shared">&ndash;</td></tr>
+          <tr><td>over-admission, per-replica</td><td id="b-over">&ndash;</td></tr>
+        </tbody>
+      </table>
     </div>
-  </section>
-
-  <section class="card">
-    <div class="race-head">
-      <h2 class="eyebrow">admitted requests per second</h2>
-      <div class="legend mono">
-        <span><i class="swatch steel"></i>per-replica counters</span>
-        <span><i class="swatch copper"></i>one shared store</span>
-      </div>
+    <div>
+      <table class="results ledger" aria-label="the receipt">
+        <caption>Table 2. The receipt, per-replica gateway.</caption>
+        <tbody>
+          <tr><td>requests admitted above the policy bound</td><td id="r-count">&ndash;</td></tr>
+          <tr><td>at $0.002 per request <i>(illustrative LLM call)</i></td><td class="bad" id="r-cost">&ndash;</td></tr>
+          <tr><td>same leak, extrapolated to a day at this load</td><td class="bad" id="r-day">&ndash;</td></tr>
+        </tbody>
+      </table>
+      <p class="verdict" id="verdict">running&hellip;</p>
     </div>
-    <div class="chart-wrap">
-      <svg id="chart" viewBox="0 0 720 300" role="img" aria-label="admitted requests per second for both limiter designs against the policy ceiling"></svg>
-      <div class="tooltip mono" id="tooltip" hidden></div>
+  </div>
+</section>
+
+<section id="saw" class="gut">
+  <div class="sec-bar">
+    <span class="no">03</span><h2>What you just saw</h2>
+    <span class="lede">every behavior above is a specific piece of the gateway</span>
+  </div>
+  <div class="map">
+    <div class="map-cell">
+      <span class="k">THE SPLIT COUNTER</span>
+      <div class="saw">Each replica counting alone, each admitting a full ceiling.</div>
+      <div class="is">The in-memory limiter is kept in the codebase deliberately: it makes the
+      failure mode demonstrable and doubles as the reference implementation for the algorithm
+      unit tests: <code>internal/ratelimit/memory.go</code></div>
     </div>
-    <p class="hint dim">The dashed line is the policy. Everything a curve admits above it
-    is quota the tenant never bought: on a shared LLM key, that's someone's real money.</p>
-  </section>
+    <div class="map-cell">
+      <span class="k">THE SHARED STORE</span>
+      <div class="saw">One counter every replica must ask before admitting.</div>
+      <div class="is">Check-and-decrement made atomic in Redis Lua, timed by the Redis server's
+      own clock so replicas cannot disagree about now:
+      <code>internal/ratelimit/tokenbucket.lua</code>,
+      <code>internal/ratelimit/slidingwindow.lua</code></div>
+    </div>
+    <div class="map-cell">
+      <span class="k">THE CLOCK</span>
+      <div class="saw">Thirty seconds of traffic simulated in milliseconds, reproducibly.</div>
+      <div class="is">The demo drives the same limiter interfaces on a virtual clock, the same
+      fake clock the algorithm unit tests use: <code>internal/ratelimit/clock.go</code>,
+      <code>cmd/demo-wasm/main.go</code></div>
+    </div>
+    <div class="map-cell">
+      <span class="k">THE GATEWAY</span>
+      <div class="saw">The limiter is one stage of a production request path.</div>
+      <div class="is">In front of upstreams this sits with per-upstream circuit breakers,
+      jittered-backoff retries, and request hedging, all hand-rolled, plus OTel traces and
+      Prometheus metrics: <code>internal/proxy</code>, <code>internal/resilience</code></div>
+    </div>
+  </div>
+</section>
 
-  <section class="tiles" id="tiles"></section>
-
-  <section class="card">
-    <div class="verdict mono" id="verdict">run it: the simulation uses the shipped limiter code, not a model of it.</div>
-  </section>
-
-  <footer class="foot">
-    <p>The production gateway holds a shared 300 req/s ceiling exact across 3 Kubernetes
-    replicas by making check-and-decrement atomic in Redis Lua, and sustains 2,000 req/s
-    with zero errors at p99 46ms under load, with per-upstream circuit breakers and
-    jittered-backoff retries.</p>
-    <p class="dim">Built by <a href="https://lakshgoyal.com">Laksh Goyal</a> ·
-    <a href="https://github.com/lgoyal6/tollgate">github.com/lgoyal6/tollgate</a></p>
-  </footer>
-
-</main>
+<footer class="gut">
+  <p>The production gateway holds a shared 300 req/s ceiling exact across 3 Kubernetes replicas
+  by making check-and-decrement atomic in Redis Lua, sustains 2,000 req/s at p99 46ms with zero
+  errors, and keeps a quiet tenant's p99 at 25ms while a noisy neighbor blasts 4&times; its
+  quota. Every number is measured by committed k6 suites on a single-machine kind cluster;
+  they demonstrate correctness and relative behavior, not datacenter capacity, and that caveat
+  is in the README too.</p>
+  <div class="links">
+    Built by <a href="https://lakshgoyal.com">Laksh Goyal</a> &middot; <a href="https://github.com/lgoyal6/tollgate">source</a><br>
+    also live: <a href="https://lgoyal6.github.io/strata/">strata</a> &middot; <a href="https://lgoyal6.github.io/taut/">taut</a>
+  </div>
+</footer>
 
 <script src="demo/wasm_exec.js"></script>
 <script src="app.js"></script>
