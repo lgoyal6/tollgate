@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Aggregate the per-run k6 JSON summaries (bench/results/cost-*.json) into
-medians, run-to-run spread, and the arm-to-arm deltas the benchmark exists
-for. Also cross-checks against the gateway's own
+"""Aggregate per-run k6 JSON summaries into arm distributions and the paired
+same-round redis-minus-memory estimator. Also cross-checks against the gateway's own
 tollgate_ratelimit_check_duration_seconds histogram scrapes when present.
 
 Prints the report sections as text (stdout) and writes summary.json.
@@ -19,9 +18,9 @@ import sys
 RESULTS = sys.argv[1] if len(sys.argv) > 1 else "bench/results"
 ARM_ORDER = ["none", "memory", "redis", "redis-sw"]
 ARM_LABEL = {
-    "none": "none    (limiter bypassed — floor)",
+    "none": "none    (limiter bypassed, floor)",
     "memory": "memory  (per-replica, no Redis in path)",
-    "redis": "redis   (global, atomic Lua — default)",
+    "redis": "redis   (global, atomic Lua, default)",
     "redis-sw": "redis-sw (global, sliding-window script)",
 }
 
@@ -57,9 +56,39 @@ def spread(rows, key):
     return min(vals), max(vals)
 
 
-def fmt_med_spread(rows, key, unit="ms"):
-    lo, hi = spread(rows, key)
-    return f"{med(rows, key):8.3f} ({lo:.3f}..{hi:.3f})"
+def quartiles(values):
+    """Tukey hinges: medians of the lower and upper halves."""
+    ordered = sorted(values)
+    if len(ordered) < 2:
+        raise ValueError("at least two values are required for an IQR")
+    midpoint = len(ordered) // 2
+    lower = ordered[:midpoint]
+    upper = ordered[-midpoint:]
+    return statistics.median(lower), statistics.median(upper)
+
+
+def distribution(values):
+    values = list(values)
+    q1, q3 = quartiles(values)
+    return {
+        "median": round(statistics.median(values), 4),
+        "q1": round(q1, 4),
+        "q3": round(q3, 4),
+        "iqr": round(q3 - q1, 4),
+        "min": round(min(values), 4),
+        "max": round(max(values), 4),
+        "count": len(values),
+    }
+
+
+def fmt_distribution(values):
+    dist = distribution(values)
+    return (
+        f"median {dist['median']:.4f} ms; "
+        f"IQR {dist['q1']:.4f}..{dist['q3']:.4f} ms "
+        f"(width {dist['iqr']:.4f} ms); "
+        f"min..max {dist['min']:.4f}..{dist['max']:.4f} ms"
+    )
 
 
 def checkhist_means(results_dir):
@@ -103,12 +132,12 @@ def checkhist_means(results_dir):
 def main():
     runs = load_runs()
     if not runs:
-        print("no cost-*.json results found — nothing to summarize", file=sys.stderr)
+        print("no cost-*.json results found; nothing to summarize", file=sys.stderr)
         sys.exit(1)
 
     arms = [a for a in ARM_ORDER if a in runs] + [a for a in runs if a not in ARM_ORDER]
 
-    print("SECTION 2 — raw per-run numbers (k6, measure window only; warmup discarded)")
+    print("SECTION 2 - raw per-run numbers (k6, measure window only; warmup discarded)")
     print(f"{'arm':<9} {'run':>3} {'p50_ms':>8} {'p95_ms':>8} {'p99_ms':>8} "
           f"{'avg_ms':>8} {'max_ms':>9} {'rps':>8} {'err':>8} {'dropped':>7}")
     invalid_runs = []
@@ -133,14 +162,11 @@ def main():
         runs = {a: rs for a, rs in runs.items() if rs}
         arms = [a for a in arms if a in runs]
 
-    print("SECTION 3 — medians across runs (spread = min..max across runs)")
+    print("SECTION 3 - per-arm p50 distributions across runs")
     for arm in arms:
         rs = runs[arm]
         print(f"  {ARM_LABEL.get(arm, arm)}   [{len(rs)} runs]")
-        print(f"    p50 {fmt_med_spread(rs, 'p50_ms')} ms   "
-              f"p95 {fmt_med_spread(rs, 'p95_ms')} ms")
-        print(f"    p99 {fmt_med_spread(rs, 'p99_ms')} ms   "
-              f"throughput {med(rs, 'achieved_rps'):8.1f} ({spread(rs, 'achieved_rps')[0]:.1f}..{spread(rs, 'achieved_rps')[1]:.1f}) rps")
+        print(f"    p50 {fmt_distribution(r['p50_ms'] for r in rs)}")
     print()
 
     deltas = {}
@@ -148,18 +174,21 @@ def main():
     def delta_line(a, b, label):
         if a not in runs or b not in runs:
             return
-        d = {k: med(runs[a], k) - med(runs[b], k) for k in ("p50_ms", "p95_ms", "p99_ms")}
+        d = {
+            k: round(med(runs[a], k) - med(runs[b], k), 4)
+            for k in ("p50_ms", "p95_ms", "p99_ms")
+        }
         deltas[f"{a}-{b}"] = d
-        print(f"  {label:<44} p50 {d['p50_ms']:+7.3f} ms   p95 {d['p95_ms']:+7.3f} ms   p99 {d['p99_ms']:+7.3f} ms")
+        print(f"  {label:<44} p50 {d['p50_ms']:+8.4f} ms   p95 {d['p95_ms']:+8.4f} ms   p99 {d['p99_ms']:+8.4f} ms")
 
-    print("  deltas of medians:")
-    delta_line("redis", "memory", "redis - memory (THE cost of the global RTT)")
+    print("  descriptive deltas of arm medians, not the headline estimator:")
+    delta_line("redis", "memory", "redis - memory")
     delta_line("redis-sw", "memory", "redis-sw - memory (sliding-window variant)")
     delta_line("memory", "none", "memory - none (limiter middleware + math)")
     delta_line("redis", "none", "redis - none (global limiting vs nothing)")
 
-    # Paired per-round p50 delta: both arms measured in the same round share
-    # thermal/background conditions, so this is the tighter estimate.
+    # Paired per-round p50 delta is the preselected headline estimator because
+    # the interleaved design makes round the matching block.
     paired = None
     if "redis" in runs and "memory" in runs:
         by_run_r = {r["run"]: r for r in runs["redis"]}
@@ -167,15 +196,22 @@ def main():
         common = sorted(set(by_run_r) & set(by_run_m))
         if common:
             pd = [round(by_run_r[n]["p50_ms"] - by_run_m[n]["p50_ms"], 3) for n in common]
-            paired = {"per_round_p50_ms": pd, "median_p50_ms": statistics.median(pd)}
+            paired_dist = distribution(pd)
+            paired = {
+                "estimator": "median of paired same-round redis-minus-memory p50 deltas",
+                "per_round_p50_ms": pd,
+                **{f"{key}_p50_ms": value for key, value in paired_dist.items() if key != "count"},
+                "pair_count": paired_dist["count"],
+            }
             print()
-            print(f"  paired per-round p50 delta (redis - memory), same-round pairs: {pd}")
-            print(f"  median paired p50 delta: {statistics.median(pd):+.3f} ms")
+            print("  HEADLINE: median of paired same-round redis-minus-memory p50 deltas")
+            print(f"  per-round deltas: {pd}")
+            print(f"  {fmt_distribution(pd)}; {len(pd)} pairs")
     print()
 
     means = checkhist_means(RESULTS)
     if means:
-        print("SECTION 4 — in-gateway cross-check: mean limiter-check duration")
+        print("SECTION 4 - in-gateway cross-check: mean limiter-check duration")
         print("  (tollgate_ratelimit_check_duration_seconds, sum/count across the 3")
         print("  replicas, scraped after each run; redis-sw is the within-deployment delta)")
         by_arm = {}
@@ -190,12 +226,18 @@ def main():
     out = {
         "runs": {a: runs[a] for a in arms},
         "medians": {
-            a: {k: med(runs[a], k) for k in ("p50_ms", "p95_ms", "p99_ms", "achieved_rps")}
+            a: {
+                k: round(med(runs[a], k), 4)
+                for k in ("p50_ms", "p95_ms", "p99_ms", "achieved_rps")
+            }
             for a in arms
         },
         "spread": {
             a: {k: spread(runs[a], k) for k in ("p50_ms", "p95_ms", "p99_ms", "achieved_rps")}
             for a in arms
+        },
+        "p50_distribution_ms": {
+            a: distribution(r["p50_ms"] for r in runs[a]) for a in arms
         },
         "deltas_of_medians_ms": deltas,
         "paired_redis_minus_memory": paired,

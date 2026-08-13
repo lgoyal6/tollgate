@@ -1,0 +1,17 @@
+{
+  "arm": "none",
+  "run": 4,
+  "offered_rps": 1000,
+  "warmup_s": 10,
+  "measure_s": 30,
+  "requests": 30001,
+  "achieved_rps": 1000,
+  "p50_ms": 0.489,
+  "p95_ms": 1.321,
+  "p99_ms": 5.241,
+  "avg_ms": 0.795,
+  "min_ms": 0.162,
+  "max_ms": 93.625,
+  "error_rate": 0,
+  "dropped_iterations": 0
+}

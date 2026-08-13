@@ -1,135 +1,84 @@
-tollgate bench: limiter cost on Amazon EKS
-============================================
-generated: benchmark 2026-08-13 01:05:56..01:33:30 UTC; metric scrape 2026-08-13 01:30:57 UTC
-git: 6855707 (dirty benchmark worktree)
-provider: AWS; region: us-east-1; availability zones: us-east-1a, us-east-1b
-cluster: Amazon EKS 1.36; 2 on-demand m7i-flex.large worker nodes; 20 GiB gp3 root volume per node
-images: gateway and mock upstream built from this worktree for linux/amd64; k6 grafana/k6:2.1.0
-redis topology: 1 in-cluster Deployment replica, redis:7-alpine, reached through a ClusterIP Service
-postgres topology: 1 in-cluster StatefulSet replica, 10 GiB encrypted gp3 PVC
+tollgate bench: limiter cost, Amazon EKS in-cluster
+=====================================================
+generated: 2026-08-13 07:35:14 UTC to 2026-08-13 08:20:07 UTC by bench/run-incluster.sh
+git: 39d9977 (dirty)
+kubernetes context: tollgate-benchmark; server: v1.36.2-eks-bca9cf6
+provider: AWS; nodes: 2; instance types: m7i-flex.large; availability zones: us-east-1a,us-east-1b
+images: gateway tollgate:benchmark-20260813; mock upstream tollgate-upstream:benchmark-20260813; Redis redis:7-alpine; Postgres postgres:16-alpine
+backing stores: 1 Redis Deployment replica; 1 Postgres StatefulSet replica with 10Gi gp3 PVC
+k6: grafana/k6:2.1.0
+arms, in round order: redis redis-sw memory none
 topology: in-cluster k6 -> ClusterIP Service -> 3 gateway replicas -> mock upstream (0ms delay, 0ms jitter)
-load: constant-arrival-rate 1000 rps; 10s warmup DISCARDED + 30s measured; 6 valid runs/arm
-gateway env (all arms): ACCESS_LOG=false TRACE_SAMPLE_RATIO=0; only RATE_LIMITER differs
-validity: 24/24 runs valid; no run excluded; every run had 0 errors and 0 dropped iterations
-
-SECTION 1 - benchmark controls
-  none: limiter middleware omitted
-  memory: per-replica token bucket, no Redis request-path hop
-  redis: global token bucket, one atomic Redis Lua request per check
-  redis-sw: global sliding-window limiter, one atomic Redis Lua request per check
-  offered load and replica count were identical in all four arms.
+load: constant-arrival-rate 1000 rps; 10s warmup DISCARDED + 30s measured; 12 runs/arm
+headline estimator: median of paired same-round redis-minus-memory p50 deltas
 
 SECTION 2 - raw per-run numbers (k6, measure window only; warmup discarded)
 arm       run   p50_ms   p95_ms   p99_ms   avg_ms    max_ms      rps      err dropped
-none        1    1.221    1.665    2.478    1.088    33.083   1000.0  0.00000       0
-none        2    1.234    1.696    2.705    1.141    68.128   1000.0  0.00000       0
-none        3    1.231    1.615    2.255    1.155    27.615   1000.0  0.00000       0
-none        4    0.872    1.546    2.134    1.010    41.385   1000.0  0.00000       0
-none        5    1.187    1.705    2.430    1.146    23.944   1000.1  0.00000       0
-none        6    1.237    1.653    2.328    1.171    32.844   1000.0  0.00000       0
-memory      1    1.204    1.694    2.344    1.171    37.778   1000.0  0.00000       0
-memory      2    1.287    1.794    2.436    1.256    29.487   1000.0  0.00000       0
-memory      3    1.263    1.670    2.394    1.228    36.402   1000.0  0.00000       0
-memory      4    1.258    1.766    2.662    1.220    52.124   1000.0  0.00000       0
-memory      5    1.249    1.646    2.258    1.201    31.727   1000.0  0.00000       0
-memory      6    1.060    1.713    2.344    1.136    32.494   1000.0  0.00000       0
-redis       1    1.578    2.272    3.058    1.571    25.647   1000.0  0.00000       0
-redis       2    1.848    2.340    3.435    1.632    36.626   1000.0  0.00000       0
-redis       3    1.139    1.775    2.480    1.248    50.696   1000.0  0.00000       0
-redis       4    1.436    2.213    3.033    1.487    37.922   1000.0  0.00000       0
-redis       5    1.355    1.829    2.551    1.350    33.440   1000.0  0.00000       0
-redis       6    1.390    1.891    3.121    1.423    35.127   1000.0  0.00000       0
-redis-sw    1    1.790    2.312    3.342    1.640    29.104   1000.0  0.00000       0
-redis-sw    2    1.863    2.341    3.196    1.661    49.361   1000.0  0.00000       0
-redis-sw    3    1.369    1.812    2.451    1.321    22.551   1000.0  0.00000       0
-redis-sw    4    1.798    2.285    3.146    1.617    26.519   1000.0  0.00000       0
-redis-sw    5    1.408    1.926    2.849    1.524    67.404   1000.0  0.00000       0
-redis-sw    6    1.395    1.907    2.783    1.444    52.156   1000.0  0.00000       0
+none        1    0.883    1.933    2.598    0.983    32.578   1000.0  0.00000       0
+none        2    1.125    1.831    2.369    1.203    36.503   1000.0  0.00000       0
+none        3    0.989    1.818    2.564    1.086    40.497   1000.0  0.00000       0
+none        4    0.984    1.843    2.334    1.153    27.856   1000.0  0.00000       0
+none        5    1.337    1.856    2.266    1.276    40.547   1000.0  0.00000       0
+none        6    1.297    1.958    2.348    1.147    28.077   1000.0  0.00000       0
+none        7    0.954    1.997    3.018    1.047    49.215   1000.0  0.00000       0
+none        8    1.409    1.995    2.523    1.230    37.445   1000.0  0.00000       0
+none        9    1.016    2.041    2.668    1.149    33.754   1000.0  0.00000       0
+none       10    1.352    1.967    2.422    1.352    38.551   1000.0  0.00000       0
+none       11    1.052    1.834    2.303    1.187    37.932   1000.0  0.00000       0
+none       12    1.343    1.914    2.313    1.278    37.473   1000.0  0.00000       0
+memory      1    1.449    2.008    2.481    1.388    26.390   1000.0  0.00000       0
+memory      2    0.991    1.972    2.665    1.132    36.520   1000.0  0.00000       0
+memory      3    1.420    1.948    2.425    1.429    42.552   1000.0  0.00000       0
+memory      4    1.353    1.806    2.333    1.320    38.477   1000.0  0.00000       0
+memory      5    1.437    2.024    2.467    1.417    35.313   1000.0  0.00000       0
+memory      6    1.470    1.969    2.426    1.410    29.175   1000.0  0.00000       0
+memory      7    1.397    1.950    2.563    1.234    35.617   1000.0  0.00000       0
+memory      8    0.945    1.662    2.151    1.049    36.587   1000.0  0.00000       0
+memory      9    1.117    1.847    2.276    1.248    40.603   1000.0  0.00000       0
+memory     10    0.854    1.870    2.680    0.940    35.188   1000.0  0.00000       0
+memory     11    1.397    1.948    2.327    1.367    39.520   1000.0  0.00000       0
+memory     12    0.947    1.893    2.422    1.018    16.405   1000.0  0.00000       0
+redis       1    1.962    2.494    3.004    1.796    38.009   1000.0  0.00000       0
+redis       2    1.718    2.224    2.968    1.719    39.193   1000.0  0.00000       0
+redis       3    1.652    2.574    3.155    1.658    27.511   1000.0  0.00000       0
+redis       4    1.575    2.120    3.014    1.620    32.854   1000.0  0.00000       0
+redis       5    1.459    2.060    2.721    1.475    39.410   1000.0  0.00000       0
+redis       6    1.318    2.064    2.640    1.422    30.814   1000.0  0.00000       0
+redis       7    1.424    2.190    2.863    1.492    18.208   1000.0  0.00000       0
+redis       8    1.628    2.125    2.739    1.646    28.068   1000.0  0.00000       0
+redis       9    1.839    2.574    3.072    1.772    34.251   1000.0  0.00000       0
+redis      10    1.715    2.200    2.906    1.751    10.539   1000.0  0.00000       0
+redis      11    1.417    2.000    2.677    1.447    34.111   1000.0  0.00000       0
+redis      12    1.432    2.008    2.540    1.399    10.638   1000.0  0.00000       0
+redis-sw    1    1.716    2.467    2.939    1.683    27.507   1000.0  0.00000       0
+redis-sw    2    1.711    2.187    2.831    1.761    16.555   1000.0  0.00000       0
+redis-sw    3    2.145    2.692    3.193    1.951    38.500   1000.0  0.00000       0
+redis-sw    4    1.354    2.017    2.555    1.407    35.576   1000.0  0.00000       0
+redis-sw    5    1.667    2.372    2.878    1.575    24.810   1000.0  0.00000       0
+redis-sw    6    1.654    2.169    2.717    1.614    27.782   1000.0  0.00000       0
+redis-sw    7    1.600    2.500    2.973    1.641    18.155   1000.0  0.00000       0
+redis-sw    8    1.522    2.034    2.597    1.504    37.153   1000.0  0.00000       0
+redis-sw    9    1.559    2.528    2.971    1.621    33.050   1000.0  0.00000       0
+redis-sw   10    1.641    2.160    2.759    1.608    35.304   1000.0  0.00000       0
+redis-sw   11    1.954    2.576    3.188    1.731    15.651   1000.0  0.00000       0
+redis-sw   12    1.395    1.898    2.461    1.349    26.044   1000.0  0.00000       0
 
-SECTION 3 - medians across runs (spread = min..max across runs)
-  none    (limiter bypassed, floor)   [6 runs]
-    p50    1.226 (0.872..1.237) ms   p95    1.659 (1.546..1.705) ms
-    p99    2.379 (2.134..2.705) ms   throughput   1000.0 (1000.0..1000.1) rps
-  memory  (per-replica, no Redis in path)   [6 runs]
-    p50    1.254 (1.060..1.287) ms   p95    1.704 (1.646..1.794) ms
-    p99    2.369 (2.258..2.662) ms   throughput   1000.0 (1000.0..1000.0) rps
-  redis   (global, atomic Lua, default)   [6 runs]
-    p50    1.413 (1.139..1.848) ms   p95    2.052 (1.775..2.340) ms
-    p99    3.045 (2.480..3.435) ms   throughput   1000.0 (1000.0..1000.0) rps
-  redis-sw (global, sliding-window script)   [6 runs]
-    p50    1.599 (1.369..1.863) ms   p95    2.106 (1.812..2.341) ms
-    p99    2.998 (2.451..3.342) ms   throughput   1000.0 (1000.0..1000.0) rps
+SECTION 3 - per-arm p50 distributions across runs
+  none    (limiter bypassed, floor)   [12 runs]
+    p50 median 1.0885 ms; IQR 0.9865..1.3400 ms (width 0.3535 ms); min..max 0.8830..1.4090 ms
+  memory  (per-replica, no Redis in path)   [12 runs]
+    p50 median 1.3750 ms; IQR 0.9690..1.4285 ms (width 0.4595 ms); min..max 0.8540..1.4700 ms
+  redis   (global, atomic Lua, default)   [12 runs]
+    p50 median 1.6015 ms; IQR 1.4280..1.7165 ms (width 0.2885 ms); min..max 1.3180..1.9620 ms
+  redis-sw (global, sliding-window script)   [12 runs]
+    p50 median 1.6475 ms; IQR 1.5405..1.7135 ms (width 0.1730 ms); min..max 1.3540..2.1450 ms
 
-  deltas of medians:
-  redis - memory (cost of the global RTT)     p50  +0.159 ms   p95  +0.349 ms   p99  +0.676 ms
-  redis-sw - memory (sliding-window variant)  p50  +0.345 ms   p95  +0.402 ms   p99  +0.629 ms
-  memory - none (limiter middleware + math)   p50  +0.028 ms   p95  +0.044 ms   p99  -0.010 ms
-  redis - none (global limiting vs nothing)   p50  +0.187 ms   p95  +0.393 ms   p99  +0.666 ms
+  descriptive deltas of arm medians, not the headline estimator:
+  redis - memory                               p50  +0.2265 ms   p95  +0.2095 ms   p99  +0.4590 ms
+  redis-sw - memory (sliding-window variant)   p50  +0.2725 ms   p95  +0.3315 ms   p99  +0.4290 ms
+  memory - none (limiter middleware + math)    p50  +0.2865 ms   p95  +0.0245 ms   p99  +0.0300 ms
+  redis - none (global limiting vs nothing)    p50  +0.5130 ms   p95  +0.2340 ms   p99  +0.4890 ms
 
-  paired per-round p50 delta (redis - memory), same-round pairs: [0.374, 0.561, -0.124, 0.178, 0.106, 0.330]
-  median paired p50 delta: +0.254 ms
-
-SECTION 4 - in-gateway cross-check: mean limiter-check duration
-  (tollgate_ratelimit_check_duration_seconds, sum/count across the 3
-  replicas, scraped after each run; redis-sw is the within-deployment delta)
-    memory    mean check   0.001 ms (runs: 0.001, 0.001, 0.001, 0.001, 0.001, 0.001)
-    redis     mean check   0.391 ms (runs: 0.514, 0.480, 0.312, 0.471, 0.289, 0.306)
-    redis-sw  mean check   0.379 ms (runs: 0.471, 0.481, 0.278, 0.463, 0.295, 0.288)
-
-  raw scrape after redis-sw run 6:
-# captured_at 2026-08-13T01:30:57Z
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0001"} 15641
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.00025"} 25566
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0005"} 26128
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.001"} 26290
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0025"} 26382
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.005"} 26401
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.01"} 26405
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.025"} 26406
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.05"} 26406
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="0.1"} 26406
-gateway-1 tollgate_ratelimit_check_duration_seconds_bucket{le="+Inf"} 26406
-gateway-1 tollgate_ratelimit_check_duration_seconds_sum 3.1742088359999983
-gateway-1 tollgate_ratelimit_check_duration_seconds_count 26406
-gateway-1 tollgate_ratelimit_errors_total 0
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0001"} 16053
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.00025"} 25905
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0005"} 26441
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.001"} 26572
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0025"} 26655
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.005"} 26684
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.01"} 26689
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.025"} 26691
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.05"} 26691
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="0.1"} 26691
-gateway-2 tollgate_ratelimit_check_duration_seconds_bucket{le="+Inf"} 26691
-gateway-2 tollgate_ratelimit_check_duration_seconds_sum 3.2006846740000268
-gateway-2 tollgate_ratelimit_check_duration_seconds_count 26691
-gateway-2 tollgate_ratelimit_errors_total 0
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0001"} 0
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.00025"} 0
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0005"} 0
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.001"} 26389
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.0025"} 26826
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.005"} 26873
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.01"} 26904
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.025"} 26907
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.05"} 26908
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="0.1"} 26908
-gateway-3 tollgate_ratelimit_check_duration_seconds_bucket{le="+Inf"} 26908
-gateway-3 tollgate_ratelimit_check_duration_seconds_sum 17.378598271000072
-gateway-3 tollgate_ratelimit_check_duration_seconds_count 26908
-gateway-3 tollgate_ratelimit_errors_total 0
-
-SECTION 5 - HPA scaling evidence under load
-  HPA test load: constant-arrival-rate 1000 rps against 3 Ready gateway replicas.
-  Test-only target: tollgate_p99_latency_ms = 1ms; maxReplicas = 5.
-  2026-08-13T01:44:56Z observed: deployment desired=3 ready=3; HPA current=3 desired=3; metric=2299m.
-  2026-08-13T01:45:09Z Kubernetes SuccessfulRescale event:
-    New size: 5; reason: pods metric tollgate_p99_latency_ms above target
-  2026-08-13T01:45:11Z observed: deployment desired=5 ready=3; HPA current=3 desired=5; metric=2116m.
-  2026-08-13T01:45:26Z observed: deployment desired=5 ready=3; HPA current=5 desired=5; metric=2024m.
-
-  The event verifies the HPA decision and Deployment desired-replica change
-  from 3 to 5 under load. It does not verify 5 Ready replicas: the fifth pod
-  was unschedulable because both benchmark workers reported insufficient CPU.
+  HEADLINE: median of paired same-round redis-minus-memory p50 deltas
+  per-round deltas: [0.513, 0.727, 0.232, 0.222, 0.022, -0.152, 0.027, 0.683, 0.722, 0.861, 0.02, 0.485]
+  median 0.3585 ms; IQR 0.0245..0.7025 ms (width 0.6780 ms); min..max -0.1520..0.8610 ms; 12 pairs
