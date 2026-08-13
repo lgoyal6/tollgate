@@ -91,12 +91,10 @@ containers are running.
 
 ## Honest caveats
 
-- **Laptop numbers, not datacenter numbers.** Everything shares one machine;
-  absolute latencies are optimistic (no real network) and the deltas are
-  what matter. In particular, container-to-container Redis RTT here is
-  ~0.04–0.06 ms — *cheaper* than a typical in-cluster hop (~0.2–0.5 ms), so
-  the measured Redis-arm delta is toward the low end of what a real
-  deployment would pay per request.
+- **Laptop numbers are not datacenter numbers.** Everything in the laptop run
+  shares one machine. The separately committed AWS EKS run repeats the same
+  four arms in-cluster; see `bench/results/limiter_cost_incluster.txt` instead
+  of extrapolating from the laptop's container-to-container RTT.
 - The load generator shares CPUs with the system under test (identical
   across arms; validity checks would flag saturation).
 - The latency arms use the token-bucket script on the hot path; `redis-sw`
@@ -119,3 +117,33 @@ containers are running.
   scripts, aggregation scripts, runner) plus this file and the Makefile
   target. The dev `docker-compose.yml`, Helm chart, and limiter code paths
   are untouched.
+
+## AWS EKS in-cluster run
+
+The in-cluster result is committed separately at
+`bench/results/limiter_cost_incluster.txt`. It was collected on 2026-08-13 UTC
+in `us-east-1`, spanning `us-east-1a` and `us-east-1b`, on an Amazon EKS 1.36
+cluster with two on-demand `m7i-flex.large` workers. Each worker had a 20 GiB
+gp3 root volume. The load generator, gateway, Redis, Postgres, and mock
+upstreams all ran inside that cluster.
+
+Redis topology was one `redis:7-alpine` Deployment replica behind a ClusterIP
+Service. Postgres remained in-cluster as one StatefulSet replica with a 10 GiB
+encrypted gp3 PVC. No managed database service participated in the run.
+
+The latency method matched the laptop run: `none`, `memory`, `redis`, and
+`redis-sw`; six valid runs per arm; 1000 offered requests per second; three
+gateway replicas; 10 seconds of discarded warmup followed by 30 measured
+seconds; and a mock upstream configured for 0ms base delay and 0ms jitter.
+All 24 runs passed the existing validity thresholds, with no errors or dropped
+iterations.
+
+The committed result also contains the raw scrape of
+`tollgate_ratelimit_check_duration_seconds` captured at
+2026-08-13T01:30:57Z. A separate 1000 rps HPA exercise began with three Ready
+gateway replicas. With a disclosed test-only 1ms p99 target and maximum of
+five replicas, Kubernetes emitted a `SuccessfulRescale` event at
+2026-08-13T01:45:09Z requesting five replicas. The two-node benchmark shape
+could not schedule the fifth pod because both workers reported insufficient
+CPU, so this evidence verifies the HPA decision from 3 to 5 desired replicas,
+not five Ready replicas.
