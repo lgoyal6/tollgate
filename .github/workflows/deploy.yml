@@ -1,0 +1,170 @@
+name: Deploy to Amazon EKS
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: tollgate
+  ECR_GATEWAY_REPOSITORY: tollgate
+  ECR_UPSTREAM_REPOSITORY: tollgate-upstream
+  KUBE_NAMESPACE: tollgate
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      IMAGE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${AWS_ROLE_ARN}" || {
+            echo "AWS_ROLE_ARN repository secret is required" >&2
+            exit 1
+          }
+          [[ "${IMAGE_TAG}" == v* ]] || {
+            echo "deployment requires a v* version tag" >&2
+            exit 1
+          }
+
+      - name: Authenticate to AWS with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build and push gateway image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: gateway
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_GATEWAY_REPOSITORY }}:${{ github.ref_name }}
+          build-args: VERSION=${{ github.ref_name }}
+
+      - name: Build and push mock upstream image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: upstream
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_UPSTREAM_REPOSITORY }}:${{ github.ref_name }}
+          build-args: VERSION=${{ github.ref_name }}
+
+      - name: Configure kubectl
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig \
+            --region "${AWS_REGION}" \
+            --name "${EKS_CLUSTER_NAME}"
+          kubectl version --client
+          helm version
+
+      - name: Verify in-cluster backing stores
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get namespace "${KUBE_NAMESPACE}"
+          kubectl rollout status statefulset/postgres \
+            -n "${KUBE_NAMESPACE}" \
+            --timeout=5m
+          kubectl rollout status deployment/redis \
+            -n "${KUBE_NAMESPACE}" \
+            --timeout=5m
+
+      - name: Apply database migrations and seed routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for migration in migrations/001_init.sql migrations/002_upstream_auth.sql; do
+            kubectl exec -i statefulset/postgres \
+              -n "${KUBE_NAMESPACE}" \
+              -- psql -v ON_ERROR_STOP=1 -U tollgate -d tollgate < "${migration}"
+          done
+          sed \
+            -e 's|__UPSTREAM_A__|upstream-a:9000|g' \
+            -e 's|__UPSTREAM_B__|upstream-b:9000|g' \
+            migrations/seed.sql \
+            | kubectl exec -i statefulset/postgres \
+                -n "${KUBE_NAMESPACE}" \
+                -- psql -v ON_ERROR_STOP=1 -U tollgate -d tollgate
+
+      - name: Install Prometheus and the custom-metrics adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install prometheus prometheus-community/prometheus \
+            --version 29.24.0 \
+            --namespace monitoring \
+            --create-namespace \
+            --values deploy/monitoring/prometheus-values.yaml \
+            --wait \
+            --timeout 10m
+          helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+            --version 5.3.0 \
+            --namespace monitoring \
+            --values deploy/monitoring/adapter-values.yaml \
+            --wait \
+            --timeout 10m
+
+      - name: Deploy Tollgate
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install tollgate deploy/helm/tollgate \
+            --namespace "${KUBE_NAMESPACE}" \
+            --set-string image.repository="${ECR_REGISTRY}/${ECR_GATEWAY_REPOSITORY}" \
+            --set-string image.tag="${IMAGE_TAG}" \
+            --set image.pullPolicy=Always \
+            --set-string demoUpstreams.image="${ECR_REGISTRY}/${ECR_UPSTREAM_REPOSITORY}:${IMAGE_TAG}" \
+            --wait \
+            --timeout 10m
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl rollout status deployment/tollgate \
+            -n "${KUBE_NAMESPACE}" \
+            --timeout=5m
+          kubectl rollout status deployment/upstream-a \
+            -n "${KUBE_NAMESPACE}" \
+            --timeout=5m
+          kubectl rollout status deployment/upstream-b \
+            -n "${KUBE_NAMESPACE}" \
+            --timeout=5m
+          kubectl get deployment,statefulset,hpa,pod \
+            -n "${KUBE_NAMESPACE}"
+          echo "::notice title=Teardown required::Run deploy/terraform/aws/teardown.sh when verification is complete. The cluster bills continuously."

@@ -20,6 +20,8 @@ resource "kubernetes_secret_v1" "postgres_credentials" {
 }
 
 resource "kubernetes_stateful_set_v1" "postgres" {
+  depends_on = [kubernetes_storage_class_v1.postgres]
+
   metadata {
     name      = "postgres"
     namespace = kubernetes_namespace_v1.tollgate.metadata[0].name
@@ -85,9 +87,10 @@ resource "kubernetes_stateful_set_v1" "postgres" {
         name = "data"
       }
       spec {
-        access_modes = ["ReadWriteOnce"]
+        access_modes       = ["ReadWriteOnce"]
+        storage_class_name = var.postgres_storage_class
         resources {
-          requests = { storage = "1Gi" }
+          requests = { storage = var.postgres_storage_size }
         }
       }
     }
