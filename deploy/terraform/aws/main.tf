@@ -222,6 +222,27 @@ data "tls_certificate" "github_actions" {
   url = "https://token.actions.githubusercontent.com"
 }
 
+data "http" "github_repository" {
+  url = "https://api.github.com/repos/${var.github_repository}"
+
+  request_headers = {
+    Accept               = "application/vnd.github+json"
+    User-Agent           = "tollgate-terraform"
+    X-GitHub-Api-Version = "2022-11-28"
+  }
+}
+
+locals {
+  github_repository_metadata = jsondecode(data.http.github_repository.response_body)
+  github_oidc_subject_prefix = format(
+    "repo:%s@%s/%s@%s",
+    local.github_repository_metadata.owner.login,
+    local.github_repository_metadata.owner.id,
+    local.github_repository_metadata.name,
+    local.github_repository_metadata.id,
+  )
+}
+
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -244,7 +265,7 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/tags/v*"
+          "token.actions.githubusercontent.com:sub" = "${local.github_oidc_subject_prefix}:ref:refs/tags/v*"
         }
       }
     }]

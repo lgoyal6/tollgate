@@ -45,25 +45,6 @@ jobs:
             exit 1
           }
 
-      - name: Publish OIDC claim context
-        shell: bash
-        run: |
-          set -euo pipefail
-          response="$({
-            curl --fail --silent --show-error \
-              --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
-          })"
-          jq -r '.value' <<<"${response}" \
-            | jq -Rr '
-                split(".")[1]
-                | gsub("-"; "+")
-                | gsub("_"; "/")
-                | @base64d
-                | fromjson
-                | {sub, aud, repository, ref, job_workflow_ref}
-              '
-
       - name: Authenticate to AWS with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:

@@ -30,6 +30,8 @@ terraform -chdir=deploy/terraform apply \
 Store the `github_actions_role_arn` Terraform output as the repository secret
 `AWS_ROLE_ARN`. It is an IAM role identifier, not a credential. Do not commit the
 output, an AWS account ID, access keys, Terraform state, or kubeconfig content.
+The role trust policy reads GitHub's public repository metadata at apply time to
+match GitHub's immutable OIDC owner and repository IDs without committing them.
 
 ## Teardown
 
