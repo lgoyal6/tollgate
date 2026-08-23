@@ -39,7 +39,7 @@ Raw output: `loadtest/results/correctness-memory.json`,
 - **Memory limiter admitted ~2.9× the quota.** Each of the 3 replicas kept
   its own window and independently admitted up to 300/s. 26,942 ≈ 3 × 9,000
   (connection distribution across pods isn't perfectly even, hence not
-  exactly 3×). A tenant paying for 300 req/s would silently receive ~900 —
+  exactly 3×). A tenant paying for 300 req/s would silently receive ~900  - 
   and the multiplier grows with every scale-out event, which is exactly
   what an HPA does under load.
 - **Redis limiter admitted 9,000 = 300/s × 30s, exactly.** All replicas
@@ -60,7 +60,7 @@ drives 20 goroutines × 50 requests at one tenant against a real Redis:
 
 ## Why the scripts are trustworthy
 
-- Single Lua script per decision — Redis executes scripts serially, so
+- Single Lua script per decision - Redis executes scripts serially, so
   read-modify-write is atomic without locks or transactions.
 - Clock source is Redis `TIME` inside the script: one authoritative clock
   for all replicas; gateway clock skew is irrelevant. (Redis ≥ 5 replicates
