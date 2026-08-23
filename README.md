@@ -13,7 +13,7 @@ Everything interesting is hand-rolled on purpose - the token bucket and sliding-
 ## Run it for your team (the shared-key setup)
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # the shared credential — stays on the gateway host
+export ANTHROPIC_API_KEY=sk-ant-...   # the shared credential - stays on the gateway host
 make up && scripts/seed.sh compose >/dev/null
 
 alias tga='docker compose exec -T -e DATABASE_URL=postgres://tollgate:tollgate@postgres:5432/tollgate gateway /tollgate-admin'
@@ -147,7 +147,7 @@ Both are single Lua scripts (`internal/ratelimit/*.lua`) executed via `EVALSHA`:
 
 ```bash
 make up      # gateway + redis + postgres + 2 upstreams + prometheus + jaeger
-make seed    # migrations + demo tenants; prints API key exports — eval them
+make seed    # migrations + demo tenants; prints API key exports - eval them
 eval "$(scripts/seed.sh compose | grep '^export')"
 curl -H "X-API-Key: $TOLLGATE_KEY_LOADTEST" localhost:8080/echo/hello
 ```
