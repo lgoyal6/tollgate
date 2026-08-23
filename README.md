@@ -1,14 +1,14 @@
 # tollgate
 
-Every hackathon team I've been on ends up sharing one LLM API key. It gets pasted into the group chat, someone's agent loop goes runaway at 3am, and the shared budget is gone before judging. The fixes people actually use — "everyone be careful" and rotating the key after each scare — aren't fixes.
+Every hackathon team I've been on ends up sharing one LLM API key. It gets pasted into the group chat, someone's agent loop goes runaway at 3am, and the shared budget is gone before judging. The fixes people actually use - "everyone be careful" and rotating the key after each scare - aren't fixes.
 
-tollgate is the piece of infrastructure that problem deserves: a small self-hosted gateway you park in front of any shared upstream (Anthropic, OpenAI, anything HTTP). Each teammate gets **their own revocable key with their own rate limit**; the real provider credential lives only in the gateway's environment and is injected on the way out, so nobody can paste what they never had. When someone's loop runs away, *they* get 429s with `Retry-After` — everyone else's budget is untouched.
+tollgate is the piece of infrastructure that problem deserves: a small self-hosted gateway you park in front of any shared upstream (Anthropic, OpenAI, anything HTTP). Each teammate gets **their own revocable key with their own rate limit**; the real provider credential lives only in the gateway's environment and is injected on the way out, so nobody can paste what they never had. When someone's loop runs away, *they* get 429s with `Retry-After` - everyone else's budget is untouched.
 
-Sharing one upstream fairly turns out to be a multi-tenancy problem, and the part I ended up caring about most is the part most rate limiters quietly get wrong: **limits that stay correct when the gateway itself scales past one replica.** Admission decisions here execute as atomic Lua scripts in shared Redis, so three gateway pods enforcing "300 req/s" admit 300 req/s — not 900. That property is measured, not claimed (see below).
+Sharing one upstream fairly turns out to be a multi-tenancy problem, and the part I ended up caring about most is the part most rate limiters quietly get wrong: **limits that stay correct when the gateway itself scales past one replica.** Admission decisions here execute as atomic Lua scripts in shared Redis, so three gateway pods enforcing "300 req/s" admit 300 req/s - not 900. That property is measured, not claimed (see below).
 
 **Live demo:** [lgoyal6.github.io/tollgate](https://lgoyal6.github.io/tollgate/), the real limiter code in your tab: watch per-replica counters admit 3x the policy while the shared store holds the ceiling exact, then read what the difference costs on a shared key.
 
-Everything interesting is hand-rolled on purpose — the token bucket and sliding-window-log limiters, the circuit breaker, jittered retries, request hedging, and the reverse proxy itself. The only dependencies are the Redis client, the Postgres driver, OpenTelemetry, and the Prometheus client. Router is stdlib `net/http`.
+Everything interesting is hand-rolled on purpose - the token bucket and sliding-window-log limiters, the circuit breaker, jittered retries, request hedging, and the reverse proxy itself. The only dependencies are the Redis client, the Postgres driver, OpenTelemetry, and the Prometheus client. Router is stdlib `net/http`.
 
 ## Run it for your team (the shared-key setup)
 
@@ -25,7 +25,7 @@ tga add-route -tenant alice -prefix /anthropic/ -upstream https://api.anthropic.
 tga issue-key -tenant alice        # printed once; hand it to Alice
 ```
 
-Alice points her SDK at the gateway and uses *her* key — the SDK doesn't know the difference:
+Alice points her SDK at the gateway and uses *her* key - the SDK doesn't know the difference:
 
 ```python
 client = anthropic.Anthropic(
@@ -34,11 +34,11 @@ client = anthropic.Anthropic(
 )
 ```
 
-Her key is verified and stripped; the shared `x-api-key` is attached from the gateway's env on the way out (SSE streaming passes through with eager flushing). Rotate her key with a grace window when she leaks it, revoke it when she graduates, and read `tollgate_requests_total{tenant="alice"}` to see who's been burning the budget. LLM `POST`s are never retried or hedged — a paid token is spent at most once.
+Her key is verified and stripped; the shared `x-api-key` is attached from the gateway's env on the way out (SSE streaming passes through with eager flushing). Rotate her key with a grace window when she leaks it, revoke it when she graduates, and read `tollgate_requests_total{tenant="alice"}` to see who's been burning the budget. LLM `POST`s are never retried or hedged - a paid token is spent at most once.
 
 ## Measured behaviour
 
-Measured on the included kind deployment (3 gateway replicas, Apple M-series laptop — see [Methodology](#methodology) for the honest caveats).
+Measured on the included kind deployment (3 gateway replicas, Apple M-series laptop - see [Methodology](#methodology) for the honest caveats).
 
 **Throughput / latency** (k6 `constant-arrival-rate`, 60s per level, unlimited tenant, demo upstream adds 5–15ms simulated latency):
 
@@ -48,18 +48,18 @@ Measured on the included kind deployment (3 gateway replicas, Apple M-series lap
 | 1,000 rps | 999.7 rps | 11.4 ms | 16.5 ms | 46.2 ms | 0% | 0 |
 | 2,000 rps | 1,999.5 rps | 11.0 ms | 16.0 ms | 45.7 ms | 0% | 0 |
 
-**Distributed rate limit correctness** — the property the whole design rests on. One tenant limited to 300 req/s (sliding window log), offered 1,200 req/s for 30s, load-balanced across **3 replicas**. Mathematical ceiling: 9,300 admissions (300 × 30 windows, +1 window boundary slack):
+**Distributed rate limit correctness** - the property the whole design rests on. One tenant limited to 300 req/s (sliding window log), offered 1,200 req/s for 30s, load-balanced across **3 replicas**. Mathematical ceiling: 9,300 admissions (300 × 30 windows, +1 window boundary slack):
 
 | Limiter backend | Admitted | vs. ceiling | Verdict |
 |---|---|---|---|
 | naive in-memory (per replica) | 26,942 | **+190%** | each replica kept its own counter: quota × 3 |
 | Redis Lua (this project) | **9,000** | −3.2% (= exactly 300/s × 30s) | globally correct |
 
-**Tenant isolation** — a noisy tenant offering 4× its quota cannot starve a well-behaved one sharing the same gateway and upstreams (30s run):
+**Tenant isolation** - a noisy tenant offering 4× its quota cannot starve a well-behaved one sharing the same gateway and upstreams (30s run):
 
 | Tenant | Offered | Admitted | 429s | p99 |
 |---|---|---|---|---|
-| noisy (limit 200/s) | 800 rps | 6,000 (= exactly 200/s × 30s) | 18,001 | — |
+| noisy (limit 200/s) | 800 rps | 6,000 (= exactly 200/s × 30s) | 18,001 | - |
 | quiet (limit 200/s) | 100 rps | 3,001 of 3,001 | **0** | **25.2 ms** (same as unloaded) |
 
 **HPA on p99 latency** (custom metric via prometheus-adapter, target 150ms/pod): under slow-upstream load, per-pod p99 rose 42ms → 229ms and the HPA scaled 3 → 5 replicas within ~90s of breach, then back to 3 after the 120s scale-down stabilization once load stopped.
@@ -123,19 +123,19 @@ Both are single Lua scripts (`internal/ratelimit/*.lua`) executed via `EVALSHA`:
 - **Fail-open by default**: a Redis blip degrades to "temporarily unlimited, loudly" (`tollgate_ratelimit_errors_total` feeds an alert) instead of a full outage. `RATE_LIMIT_FAIL_OPEN=false` flips the trade.
 - Keys carry TTLs so departed tenants leak nothing.
 
-`RATE_LIMITER=memory` keeps the same interface and algorithms but per-process — it exists so the failure mode is demonstrable, and it doubles as the reference implementation for the algorithm unit tests (deterministic fake clock).
+`RATE_LIMITER=memory` keeps the same interface and algorithms but per-process - it exists so the failure mode is demonstrable, and it doubles as the reference implementation for the algorithm unit tests (deterministic fake clock).
 
 ## Resilience
 
 - **Circuit breaker per upstream host** (`internal/resilience/breaker.go`): rolling 10s window in 10 buckets; trips at ≥50% failures over ≥20 samples; 5s cooldown; half-open admits 3 concurrent probes and closes only on 3 consecutive successes. Transitions are logged and exported (`tollgate_circuit_breaker_state`).
-- **Retries** (`retry.go`): idempotent methods only (GET/HEAD/OPTIONS — PUT/DELETE deliberately excluded), on transport errors and 502/503/504 (not 500: the upstream *ran*), exponential backoff with **full jitter**, per-route budget.
+- **Retries** (`retry.go`): idempotent methods only (GET/HEAD/OPTIONS - PUT/DELETE deliberately excluded), on transport errors and 502/503/504 (not 500: the upstream *ran*), exponential backoff with **full jitter**, per-route budget.
 - **Hedging** (`hedge.go`, behind `HEDGING_ENABLED` + per-route flag): fire one backup request if the primary hasn't answered within the route's hedge delay; first usable response wins, loser is cancelled and drained. Spends upstream capacity only on the slow tail.
 - **Graceful shutdown**: SIGTERM ⇒ readiness flips false ⇒ `DRAIN_DELAY` for endpoint propagation ⇒ `http.Server.Shutdown` waits for in-flight requests (bounded by `SHUTDOWN_TIMEOUT`) ⇒ flush traces, close pools. `terminationGracePeriodSeconds` is sized to fit the whole sequence.
 - Request bodies up to `MAX_BODY_BUFFER_BYTES` (1 MiB) are buffered so retries/hedges can replay them; larger or unknown-length bodies stream once with no re-send.
 
 ## Observability
 
-- **RED per tenant and route**: `tollgate_requests_total` / `tollgate_request_duration_seconds{tenant,route,method,code}` — label values come from operator-controlled config, never request data, so cardinality is bounded.
+- **RED per tenant and route**: `tollgate_requests_total` / `tollgate_request_duration_seconds{tenant,route,method,code}` - label values come from operator-controlled config, never request data, so cardinality is bounded.
 - **Traces**: OTLP export, W3C context propagated in and out; upstream attempts are client spans tagged with attempt number.
 - **Logs**: one JSON line per request (sampled 1-in-N under load) carrying request id, trace id, tenant, route, status, duration, upstream, attempts, hedged flag.
 - Limiter health (`check duration`, `errors`, decisions by outcome), breaker state, retry/hedge counters, config reload counters, in-flight gauge, plus Go runtime and pprof on the admin port.
@@ -152,7 +152,7 @@ eval "$(scripts/seed.sh compose | grep '^export')"
 curl -H "X-API-Key: $TOLLGATE_KEY_LOADTEST" localhost:8080/echo/hello
 ```
 
-### Kubernetes (kind) — the full story
+### Kubernetes (kind) - the full story
 
 ```bash
 make kind-up              # cluster with NodePort 30080 mapped to localhost
@@ -184,7 +184,7 @@ make test-integration   # Lua scripts against real Redis (needs `make up`)
 ```
 
 - Limiter algorithms: table-driven with a fake clock (burst, refill, window slide, retry-after math, tenant isolation).
-- The **atomicity integration test** floods one tenant from 20 goroutines and asserts admissions never exceed the policy ceiling — the property everything else rests on.
+- The **atomicity integration test** floods one tenant from 20 goroutines and asserts admissions never exceed the policy ceiling - the property everything else rests on.
 - Breaker: full state-machine walk (trip threshold, cooldown, probe budget, failure aging) on a fake clock. Hedge: winner/loser/cancellation semantics against live `httptest` servers. Proxy: forwarding, prefix strip, retry counts, 502/504 mapping, breaker integration, hedge wins. Auth: every rejection reason, plus a regression test for base64url secrets containing `_`.
 
 ## Repository layout
@@ -211,7 +211,7 @@ loadtest/              k6: baseline, correctness, fairness
 
 - No WebSocket/Upgrade passthrough; no gRPC-specific handling.
 - Single Redis; a production deployment would use Redis Cluster (keys are already hash-tagged per tenant) or replicas with fail-open covering failover.
-- API-key secrets use SHA-256, which is correct for 256-bit random secrets (there is nothing to brute-force) but would be wrong for human passwords — that trade-off is documented in `internal/auth`.
+- API-key secrets use SHA-256, which is correct for 256-bit random secrets (there is nothing to brute-force) but would be wrong for human passwords - that trade-off is documented in `internal/auth`.
 - Rate limit check adds one Redis RTT to every admitted request (~0.2–0.5ms in-cluster, measured by `tollgate_ratelimit_check_duration_seconds`).
 - kind's NodePort path is a single proxy hop; a real deployment would sit behind a proper LB.
 - The gateway host is fully trusted: it holds the shared provider credentials in its environment. That's the point (teammates can't leak what they don't have), but it means the box itself must be treated like the secret it carries.
