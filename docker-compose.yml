@@ -47,6 +47,10 @@ services:
       TRACE_SAMPLE_RATIO: "0.2"
       ACCESS_LOG_SAMPLE: "1"
       LOG_LEVEL: info
+      # Management console + API at /_admin/. Unset it and the whole surface
+      # disappears; this local default is not a secret and must not be reused
+      # anywhere reachable.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-dev-admin-token-change-me}
       # Shared provider credentials for routes using upstream auth injection
       # (-auth-env). Set them in your host shell; empty is fine otherwise.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

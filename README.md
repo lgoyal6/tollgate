@@ -12,20 +12,20 @@ Everything interesting is hand-rolled on purpose - the token bucket and sliding-
 
 ## Run it for your team (the shared-key setup)
 
+Deploy one gateway, then hand out keys from the console. Nobody needs shell
+access to the box and nobody but the deployer ever sees the provider key.
+
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # the shared credential - stays on the gateway host
-make up && scripts/seed.sh compose >/dev/null
-
-alias tga='docker compose exec -T -e DATABASE_URL=postgres://tollgate:tollgate@postgres:5432/tollgate gateway /tollgate-admin'
-
-# one tenant per teammate, each with their own budget
-tga create-tenant -id alice -name "Alice" -algo sliding_window -window 60s -limit 100
-tga add-route -tenant alice -prefix /anthropic/ -upstream https://api.anthropic.com \
-    -strip -timeout 120s -auth-header x-api-key -auth-env ANTHROPIC_API_KEY
-tga issue-key -tenant alice        # printed once; hand it to Alice
+export ADMIN_TOKEN="$(openssl rand -hex 24)"
+make up
+open "http://localhost:8080/_admin/"  # paste $ADMIN_TOKEN
 ```
 
-Alice points her SDK at the gateway and uses *her* key - the SDK doesn't know the difference:
+In the console: add a teammate (id, requests per window), point them at
+`https://api.anthropic.com` injecting `x-api-key` from `$ANTHROPIC_API_KEY`,
+then hit **Issue key**. The plaintext is shown once. Alice sets it as her SDK
+key and changes nothing else:
 
 ```python
 client = anthropic.Anthropic(
@@ -34,7 +34,50 @@ client = anthropic.Anthropic(
 )
 ```
 
-Her key is verified and stripped; the shared `x-api-key` is attached from the gateway's env on the way out (SSE streaming passes through with eager flushing). Rotate her key with a grace window when she leaks it, revoke it when she graduates, and read `tollgate_requests_total{tenant="alice"}` to see who's been burning the budget. LLM `POST`s are never retried or hedged - a paid token is spent at most once.
+Her key is verified and stripped; the shared `x-api-key` is attached from the
+gateway's env on the way out (SSE streaming passes through with eager
+flushing). LLM `POST`s are never retried or hedged - a paid token is spent at
+most once.
+
+When her agent loop runs away at 3am, the console shows whose 429 count is
+climbing, and **Cut off** disables her tenant on every replica within one
+reload. **Rotate** hands her a replacement and keeps the old key alive for 24h;
+**Revoke** kills it now.
+
+### Deploy it somewhere your team can reach
+
+The console is what makes this deployable by one person for a group, so the
+one-click paths exist for it:
+
+| Target | How |
+|---|---|
+| [Render](deploy/paas/render.yaml) | Fork, then **New > Blueprint** pointed at `deploy/paas/render.yaml`. It provisions Postgres and Redis, generates `ADMIN_TOKEN`, and asks only for the provider key. |
+| [Fly.io](deploy/paas/fly.toml) | `fly launch --copy-config --config deploy/paas/fly.toml`, attach Postgres and Redis, `fly secrets set ANTHROPIC_API_KEY=... ADMIN_TOKEN=...` |
+| [Railway](deploy/paas/railway.json) | Add Postgres and Redis plugins, deploy from the Dockerfile, set `ADMIN_TOKEN` and the provider key. |
+| Kubernetes | The Helm chart in `deploy/helm/tollgate`; set `ADMIN_TOKEN` in the secret and the console appears on both listeners. |
+
+`$PORT` is honoured when `LISTEN_ADDR` is unset, which is what those platforms
+inject. Health and readiness probes stay on `ADMIN_ADDR` (`:9090`) for
+orchestrators that can route two ports; single-port platforms can probe
+`/_admin/`.
+
+### The console is opt-in, and off by default
+
+Without `ADMIN_TOKEN` the management handler is never constructed, so a gateway
+deployed before this existed behaves exactly as it did. With it set, the same
+handler is mounted twice: on the admin listener, and on the tenant listener
+under `/_admin/`, because a one-container PaaS deploy only routes one public
+port. It is matched ahead of route lookup, so no tenant route can shadow it,
+and it authenticates with the admin token rather than a tenant key. Tokens
+shorter than 16 characters are refused at startup: it is the only thing in
+front of key issuance.
+
+The page itself is a static shell with no data baked in. The operator pastes
+the token into the tab, it lives in memory for that tab only, and every byte of
+config arrives over the authenticated API. The same operations are still
+available as a CLI (`tollgate-admin create-tenant|add-route|issue-key|
+rotate-key|revoke-key|list`); both surfaces call the same `internal/store`
+writers, so they cannot drift.
 
 ## Measured behaviour
 
@@ -152,6 +195,10 @@ eval "$(scripts/seed.sh compose | grep '^export')"
 curl -H "X-API-Key: $TOLLGATE_KEY_LOADTEST" localhost:8080/echo/hello
 ```
 
+The console is at <http://localhost:8080/_admin/>; `make up` prints the local
+`ADMIN_TOKEN` it defaulted to. Override it with `export ADMIN_TOKEN=...` before
+`make up`.
+
 ### Kubernetes (kind) - the full story
 
 ```bash
@@ -181,10 +228,15 @@ The HPA consumes `tollgate_p99_latency_ms`, computed by prometheus-adapter as `h
 make test               # table-driven unit tests
 make test-race          # same, -race
 make test-integration   # Lua scripts against real Redis (needs `make up`)
+
+# Management API against a real Postgres:
+TOLLGATE_TEST_POSTGRES=postgres://tollgate:tollgate@localhost:5432/tollgate \
+    go test ./internal/admin/
 ```
 
 - Limiter algorithms: table-driven with a fake clock (burst, refill, window slide, retry-after math, tenant isolation).
 - The **atomicity integration test** floods one tenant from 20 goroutines and asserts admissions never exceed the policy ceiling - the property everything else rests on.
+- Management surface: every API route is asserted to answer 401 for a missing, wrong, wrong-scheme, empty and trailing-junk token, with a **nil store** behind it, so a leak past the gate would panic rather than pass quietly. The integration test walks the real flow against Postgres: issue, confirm the plaintext is never served again from any endpoint, add a credential-injecting route, rotate into a grace window, refuse to rotate the same key twice, revoke (200 then 404), and flip the kill switch.
 - Breaker: full state-machine walk (trip threshold, cooldown, probe budget, failure aging) on a fake clock. Hedge: winner/loser/cancellation semantics against live `httptest` servers. Proxy: forwarding, prefix strip, retry counts, 502/504 mapping, breaker integration, hedge wins. Auth: every rejection reason, plus a regression test for base64url secrets containing `_`.
 
 ## Repository layout
@@ -197,13 +249,15 @@ internal/ratelimit     limiter.go, tokenbucket.lua, slidingwindow.lua, redis.go,
 internal/resilience    breaker.go, retry.go, hedge.go
 internal/proxy         hand-rolled forwarding engine
 internal/middleware    the request pipeline
-internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher
+internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher, config writers
+internal/admin         management API + console (only built when ADMIN_TOKEN is set)
 internal/auth          key format, hashing, verification, scopes, rotation
 internal/observability metrics registry, otel setup, slog
 migrations/            schema + NOTIFY triggers, parameterized seed
 deploy/helm/tollgate   chart: deployment, service, HPA (custom metric), PDB
 deploy/terraform       Redis + Postgres + credentials into the cluster
 deploy/monitoring      prometheus + adapter values (the p99 metric rule)
+deploy/paas            one-click templates: Render blueprint, fly.toml, railway.json
 loadtest/              k6: baseline, correctness, fairness
 ```
 

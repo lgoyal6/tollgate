@@ -1,0 +1,66 @@
+# One-click deploy for a team sharing a single provider key.
+#
+# Render reads this blueprint, provisions Postgres and Redis, builds the
+# gateway image from the repo's Dockerfile and wires the three together. What
+# you fill in by hand is exactly two secrets: the provider key you are sharing,
+# and an admin token for the console.
+#
+#   1. Fork the repo, then New > Blueprint on Render and point it at your fork
+#      with this file's path (deploy/paas/render.yaml).
+#   2. Set ANTHROPIC_API_KEY to the key the team is sharing.
+#   3. Copy the generated ADMIN_TOKEN out of the dashboard.
+#   4. Open https://<your-service>.onrender.com/_admin/ and paste the token.
+#
+# Everything after that (a tenant per teammate, a key each, a route to the
+# provider) happens in the console. The shared key stays in this service's
+# environment and is attached on the way out, so teammates hold only their own
+# revocable keys.
+
+databases:
+  - name: tollgate-postgres
+    databaseName: tollgate
+    user: tollgate
+    plan: free
+
+services:
+  - type: redis
+    name: tollgate-redis
+    plan: free
+    # Rate limit state only. Losing it fails open for one window, which is the
+    # documented behaviour of RATE_LIMIT_FAIL_OPEN.
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  - type: web
+    name: tollgate
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerTarget: gateway
+    plan: starter
+    healthCheckPath: /_admin/
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tollgate-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: tollgate-redis
+          type: redis
+          property: connectionString
+      # Render routes one public port; LISTEN_ADDR must match it.
+      - key: LISTEN_ADDR
+        value: ":10000"
+      - key: PORT
+        value: "10000"
+      - key: RATE_LIMITER
+        value: redis
+      # Generated once by Render and shown in the dashboard. This is the only
+      # thing standing in front of key issuance, so treat it like a password.
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # The shared credential. Set it in the dashboard, never in this file.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

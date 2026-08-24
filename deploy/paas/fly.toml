@@ -1,0 +1,44 @@
+# Fly.io deployment for one team's gateway.
+#
+#   fly launch --no-deploy --copy-config --config deploy/paas/fly.toml
+#   fly postgres create --name tollgate-db && fly postgres attach tollgate-db
+#   fly redis create --name tollgate-redis   # then set REDIS_ADDR from its URL
+#   fly secrets set ANTHROPIC_API_KEY=sk-ant-... ADMIN_TOKEN="$(openssl rand -hex 24)"
+#   fly deploy --config deploy/paas/fly.toml
+#
+# Then open https://<app>.fly.dev/_admin/ and paste the admin token.
+
+app = "tollgate"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "../../Dockerfile"
+  build-target = "gateway"
+
+[env]
+  LISTEN_ADDR = ":8080"
+  ADMIN_ADDR = ":9090"
+  RATE_LIMITER = "redis"
+  # A runaway agent loop is exactly the case this gateway exists for, so a
+  # limiter outage must not become a free-for-all on a paid key.
+  RATE_LIMIT_FAIL_OPEN = "false"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    method = "GET"
+    path = "/_admin/"
+
+# One machine is the honest default for a hackathon team. Scale past it with
+# `fly scale count 3` and the Redis limiter keeps the ceiling exact; that is
+# the property the project is built around.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
