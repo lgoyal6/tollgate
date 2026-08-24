@@ -1,0 +1,11 @@
+.git
+.github
+.terraform
+**/.terraform
+*.tfstate
+*.tfstate.*
+*.tfplan
+bench/.tmp
+bench/results
+coverage.out
+*.log

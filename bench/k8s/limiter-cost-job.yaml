@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: tollgate-limiter-cost
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tollgate-limiter-cost
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: __K6_IMAGE__
+          args: ["run", "--quiet", "/scripts/limiter_cost.js"]
+          env:
+            - name: BASE
+              value: http://tollgate:8080
+            - name: RATE
+              value: "__RATE__"
+            - name: WARMUP_S
+              value: "__WARMUP_S__"
+            - name: MEASURE_S
+              value: "__MEASURE_S__"
+            - name: ARM
+              value: __ARM__
+            - name: RUN
+              value: "__RUN__"
+            - name: KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tollgate-bench-keys
+                  key: __KEY_FIELD__
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: script
+          configMap:
+            name: tollgate-limiter-cost-script
+        - name: results
+          emptyDir: {}

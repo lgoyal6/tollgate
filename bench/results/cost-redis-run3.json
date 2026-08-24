@@ -1,0 +1,17 @@
+{
+  "arm": "redis",
+  "run": 3,
+  "offered_rps": 1000,
+  "warmup_s": 10,
+  "measure_s": 30,
+  "requests": 30000,
+  "achieved_rps": 1000,
+  "p50_ms": 0.705,
+  "p95_ms": 1.116,
+  "p99_ms": 1.826,
+  "avg_ms": 0.744,
+  "min_ms": 0.225,
+  "max_ms": 11.296,
+  "error_rate": 0,
+  "dropped_iterations": 0
+}

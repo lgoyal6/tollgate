@@ -1,0 +1,13 @@
+local
+  none p50: median 0.4770 ms; IQR 0.4445..0.4920 ms (width 0.0475 ms); min..max 0.3970..0.5110 ms
+  memory p50: median 0.4330 ms; IQR 0.4145..0.4650 ms (width 0.0505 ms); min..max 0.4010..0.4850 ms
+  redis p50: median 0.4915 ms; IQR 0.4850..0.5660 ms (width 0.0810 ms); min..max 0.4740..0.6080 ms
+  redis-sw p50: median 0.5320 ms; IQR 0.4920..0.5930 ms (width 0.1010 ms); min..max 0.4640..0.6080 ms
+  paired redis-minus-memory p50: median 0.0730 ms; IQR 0.0425..0.1190 ms (width 0.0765 ms); min..max 0.0020..0.1750 ms
+aws_eks
+  none p50: median 1.0885 ms; IQR 0.9865..1.3400 ms (width 0.3535 ms); min..max 0.8830..1.4090 ms
+  memory p50: median 1.3750 ms; IQR 0.9690..1.4285 ms (width 0.4595 ms); min..max 0.8540..1.4700 ms
+  redis p50: median 1.6015 ms; IQR 1.4280..1.7165 ms (width 0.2885 ms); min..max 1.3180..1.9620 ms
+  redis-sw p50: median 1.6475 ms; IQR 1.5405..1.7135 ms (width 0.1730 ms); min..max 1.3540..2.1450 ms
+  paired redis-minus-memory p50: median 0.3585 ms; IQR 0.0245..0.7025 ms (width 0.6780 ms); min..max -0.1520..0.8610 ms
+The local and AWS EKS paired-delta IQR intervals overlap: intersection 0.0425..0.1190 ms.

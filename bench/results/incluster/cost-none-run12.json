@@ -1,0 +1,1 @@
+{"arm":"none","run":12,"offered_rps":1000,"warmup_s":10,"measure_s":30,"requests":30001,"achieved_rps":1000,"p50_ms":1.343,"p95_ms":1.914,"p99_ms":2.313,"avg_ms":1.278,"min_ms":0.289,"max_ms":37.473,"error_rate":0,"dropped_iterations":0}

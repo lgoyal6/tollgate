@@ -90,7 +90,18 @@ kind-seed: ## Migrate + seed inside the kind cluster
 deploy: kind-up kind-load tf-apply monitoring-install helm-install ## Full kind deployment
 
 # ------------------------------------------------------------- load tests ---
-.PHONY: k6-baseline k6-correctness k6-fairness bench
+.PHONY: k6-baseline k6-correctness k6-fairness bench bench-limiter-cost \
+	bench-limiter-cost-local bench-limiter-cost-incluster
+
+bench-limiter-cost: bench-limiter-cost-local bench-limiter-cost-incluster ## Run the matched local and EKS limiter-cost protocol
+	python3 bench/compare.py bench/results/local bench/results/incluster \
+	  bench/results/limiter_cost_comparison.json > bench/results/limiter_cost_comparison.txt
+
+bench-limiter-cost-local: ## Run the matched limiter-cost protocol in Docker Compose
+	bench/run-local.sh
+
+bench-limiter-cost-incluster: ## Run the matched limiter-cost protocol in the current Kubernetes context
+	bench/run-incluster.sh
 
 k6-baseline: ## Latency/throughput at three load levels
 	scripts/run-k6.sh baseline

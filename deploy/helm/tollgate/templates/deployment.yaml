@@ -9,6 +9,14 @@ spec:
   {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # The verified two-node shape has room for three requested gateway pods,
+      # but not Kubernetes' default 25% surge pod. Preserve two available pods
+      # during updates without requiring extra worker capacity.
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: tollgate

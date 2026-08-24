@@ -212,7 +212,7 @@ loadtest/              k6: baseline, correctness, fairness
 - No WebSocket/Upgrade passthrough; no gRPC-specific handling.
 - Single Redis; a production deployment would use Redis Cluster (keys are already hash-tagged per tenant) or replicas with fail-open covering failover.
 - API-key secrets use SHA-256, which is correct for 256-bit random secrets (there is nothing to brute-force) but would be wrong for human passwords - that trade-off is documented in `internal/auth`.
-- Rate limit check adds one Redis RTT to every admitted request (~0.2–0.5ms in-cluster, measured by `tollgate_ratelimit_check_duration_seconds`).
+- Rate limit check adds one Redis RTT to every admitted request. In the matched 12-pair rerun, the paired Redis-minus-memory p50 delta had a 0.0425..0.1190 ms IQR locally and a 0.0245..0.7025 ms IQR on AWS EKS. The intervals overlap. See [`bench/METHODOLOGY.md`](bench/METHODOLOGY.md) and the committed raw results.
 - kind's NodePort path is a single proxy hop; a real deployment would sit behind a proper LB.
 - The gateway host is fully trusted: it holds the shared provider credentials in its environment. That's the point (teammates can't leak what they don't have), but it means the box itself must be treated like the secret it carries.
 - Rate limits meter *requests*, not tokens; a token-aware budget (parse usage from provider responses) is the natural next step for the LLM use case.
