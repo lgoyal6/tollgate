@@ -46,15 +46,25 @@ reload. **Rotate** hands her a replacement and keeps the old key alive for 24h;
 
 ### Deploy it somewhere your team can reach
 
-The console is what makes this deployable by one person for a group, so the
-one-click paths exist for it:
+The console is what makes this deployable by one person for a group, so there
+is a real one-click path for it:
 
-| Target | How |
-|---|---|
-| [Render](deploy/paas/render.yaml) | Fork, then **New > Blueprint** pointed at `deploy/paas/render.yaml`. It provisions Postgres and Redis, generates `ADMIN_TOKEN`, and asks only for the provider key. |
-| [Fly.io](deploy/paas/fly.toml) | `fly launch --copy-config --config deploy/paas/fly.toml`, attach Postgres and Redis, `fly secrets set ANTHROPIC_API_KEY=... ADMIN_TOKEN=...` |
-| [Railway](deploy/paas/railway.json) | Add Postgres and Redis plugins, deploy from the Dockerfile, set `ADMIN_TOKEN` and the provider key. |
-| Kubernetes | The Helm chart in `deploy/helm/tollgate`; set `ADMIN_TOKEN` in the secret and the console appears on both listeners. |
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lgoyal6/tollgate)
+
+That button is the only genuine one-click path. It reads [`render.yaml`](render.yaml)
+from this repo's root, provisions Postgres and Redis, generates an `ADMIN_TOKEN`,
+and asks you for one thing: the provider key your team is sharing. No fork is
+needed, and it deploys into your own Render account, so the shared credential
+lives in infrastructure you control. That is the whole security argument: this
+gateway is worth running precisely because the provider key stays with the team
+that owns it.
+
+| Target | How | One click? |
+|---|---|---|
+| **Render** | The button above. | Yes |
+| [Fly.io](deploy/paas/fly.toml) | `fly launch --copy-config --config deploy/paas/fly.toml`, attach Postgres and Redis, then `fly secrets set ANTHROPIC_API_KEY=... ADMIN_TOKEN=...` | No, Fly has no button |
+| [Railway](deploy/paas/railway.json) | Add the Postgres and Redis plugins, deploy from the Dockerfile, set `ADMIN_TOKEN` and the provider key. | No, needs a published Railway template |
+| Kubernetes | The Helm chart in `deploy/helm/tollgate`; set `ADMIN_TOKEN` in the secret and the console appears on both listeners. | No |
 
 `$PORT` is honoured when `LISTEN_ADDR` is unset, which is what those platforms
 inject. Health and readiness probes stay on `ADMIN_ADDR` (`:9090`) for
