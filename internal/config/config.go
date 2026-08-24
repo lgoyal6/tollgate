@@ -17,6 +17,13 @@ type Config struct {
 	DatabaseURL string
 	RedisAddr   string
 
+	// AdminToken gates the management API and console. Empty means the
+	// management surface is not built at all: a gateway that was deployed
+	// before it existed keeps behaving exactly as it did, and nobody can
+	// issue keys over HTTP by accident. Setting it mounts the console on
+	// both listeners (see internal/admin).
+	AdminToken string
+
 	// LimiterBackend selects "redis" (correct across replicas), "memory"
 	// (deliberately naive per-replica limiter, kept to demonstrate why the
 	// distributed one is needed), or "none" (rate limiting disabled entirely;
@@ -54,14 +61,15 @@ type Config struct {
 // validating anything that must parse.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr:             getenv("LISTEN_ADDR", ":8080"),
-		AdminAddr:              getenv("ADMIN_ADDR", ":9090"),
-		DatabaseURL:            os.Getenv("DATABASE_URL"),
-		RedisAddr:              getenv("REDIS_ADDR", "localhost:6379"),
-		LimiterBackend:         getenv("RATE_LIMITER", "redis"),
-		ServiceName:            getenv("OTEL_SERVICE_NAME", "tollgate"),
-		Version:                getenv("TOLLGATE_VERSION", "dev"),
-		LogLevel:               getenv("LOG_LEVEL", "info"),
+		ListenAddr:     getenv("LISTEN_ADDR", defaultListenAddr()),
+		AdminAddr:      getenv("ADMIN_ADDR", ":9090"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		RedisAddr:      getenv("REDIS_ADDR", "localhost:6379"),
+		AdminToken:     os.Getenv("ADMIN_TOKEN"),
+		LimiterBackend: getenv("RATE_LIMITER", "redis"),
+		ServiceName:    getenv("OTEL_SERVICE_NAME", "tollgate"),
+		Version:        getenv("TOLLGATE_VERSION", "dev"),
+		LogLevel:       getenv("LOG_LEVEL", "info"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
@@ -108,6 +116,17 @@ func Load() (Config, error) {
 		cfg.AccessLogSample = 1
 	}
 	return cfg, nil
+}
+
+// defaultListenAddr honours the PaaS convention of injecting the assigned
+// port as $PORT. Render, Railway and Fly all do this, and a one-click deploy
+// that ignores it binds the wrong port and never passes a health check.
+// An explicit LISTEN_ADDR still wins.
+func defaultListenAddr() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return ":" + p
+	}
+	return ":8080"
 }
 
 func getenv(key, def string) string {
