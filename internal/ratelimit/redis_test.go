@@ -48,6 +48,7 @@ func TestRedisTokenBucketBasics(t *testing.T) {
 	policy := Policy{Algorithm: store.AlgoTokenBucket, Rate: 100, Burst: 10}
 
 	allowed := 0
+	start := time.Now()
 	for i := 0; i < 15; i++ {
 		d, err := l.Allow(ctx, tenant, policy, fmt.Sprint(i))
 		if err != nil {
@@ -59,10 +60,22 @@ func TestRedisTokenBucketBasics(t *testing.T) {
 			t.Errorf("rejected decision has RetryAfter %v, want > 0", d.RetryAfter)
 		}
 	}
-	// 15 back-to-back requests against burst 10: refill at 100/s may top up
-	// a token or two during the loop, but never all 15.
-	if allowed < 10 || allowed > 12 {
-		t.Errorf("allowed %d of 15 burst requests, want 10..12", allowed)
+	elapsed := time.Since(start)
+
+	// The bucket starts full, so the first Burst requests are owed.
+	if allowed < int(policy.Burst) {
+		t.Errorf("allowed %d of 15, want at least the full burst of %d", allowed, policy.Burst)
+	}
+	// Everything above the burst is refill that accrued while the loop ran. The
+	// ceiling is derived from measured elapsed time rather than from an assumption
+	// that 15 Redis round trips finish inside one refill period: on a loaded
+	// machine they do not, refill at 100/s tops the bucket back up, and a fixed
+	// "10..12" bound fails for a reason that has nothing to do with the limiter.
+	refill := int(elapsed.Seconds() * policy.Rate)
+	ceiling := int(policy.Burst) + refill + 1 // +1 for the sub-token boundary
+	if allowed > ceiling {
+		t.Errorf("allowed %d of 15 in %v; ceiling is burst %d + refill %d + 1 = %d",
+			allowed, elapsed, policy.Burst, refill, ceiling)
 	}
 }
 
