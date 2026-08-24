@@ -6,6 +6,12 @@ tollgate is the piece of infrastructure that problem deserves: a small self-host
 
 Sharing one upstream fairly turns out to be a multi-tenancy problem, and the part I ended up caring about most is the part most rate limiters quietly get wrong: **limits that stay correct when the gateway itself scales past one replica.** Admission decisions here execute as atomic Lua scripts in shared Redis, so three gateway pods enforcing "300 req/s" admit 300 req/s - not 900. That property is measured, not claimed (see below).
 
+![Issuing a teammate a key, watching the shared credential get swapped in upstream, and watching her run into her own rate limit](docs/demo.gif)
+
+Alice's key goes in, the gateway strips it and attaches the team's shared
+credential on the way out, and her fourth request in a minute is her own
+problem. Reproduce that recording with `./docs/demo-setup.sh && vhs docs/demo.tape`.
+
 **Live demo:** [lgoyal6.github.io/tollgate](https://lgoyal6.github.io/tollgate/), the real limiter code in your tab: watch per-replica counters admit 3x the policy while the shared store holds the ceiling exact, then read what the difference costs on a shared key.
 
 Everything interesting is hand-rolled on purpose - the token bucket and sliding-window-log limiters, the circuit breaker, jittered retries, request hedging, and the reverse proxy itself. The only dependencies are the Redis client, the Postgres driver, OpenTelemetry, and the Prometheus client. Router is stdlib `net/http`.
