@@ -5,10 +5,14 @@
 # you fill in by hand is exactly two secrets: the provider key you are sharing,
 # and an admin token for the console.
 #
-#   1. Fork the repo, then New > Blueprint on Render and point it at your fork
-#      with this file's path (deploy/paas/render.yaml).
-#   2. Set ANTHROPIC_API_KEY to the key the team is sharing.
-#   3. Copy the generated ADMIN_TOKEN out of the dashboard.
+# This file has to live at the repository root: that is where Render's
+# Deploy to Render button looks for a blueprint, and it will not find one in a
+# subdirectory.
+#
+#   1. Click the Deploy to Render button in the README. No fork needed; Render
+#      deploys public repos it does not own straight into your own account.
+#   2. Set ANTHROPIC_API_KEY to the key your team is sharing.
+#   3. Copy the generated ADMIN_TOKEN out of the Render dashboard.
 #   4. Open https://<your-service>.onrender.com/_admin/ and paste the token.
 #
 # Everything after that (a tenant per teammate, a key each, a route to the
