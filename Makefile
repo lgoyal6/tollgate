@@ -30,6 +30,7 @@ clean:
 up: ## Start the local compose stack
 	docker compose up -d --build
 	@echo "gateway:    http://localhost:8080"
+	@echo "console:    http://localhost:8080/_admin/  (token: $${ADMIN_TOKEN:-local-dev-admin-token-change-me})"
 	@echo "admin:      http://localhost:9090/metrics"
 	@echo "prometheus: http://localhost:9091"
 	@echo "jaeger:     http://localhost:16686"
