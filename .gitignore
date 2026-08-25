@@ -1,5 +1,7 @@
 bin/
 loadtest/results/
+bench/.tmp/
+__pycache__/
 deploy/terraform/.terraform/
 deploy/terraform/.terraform.lock.hcl
 deploy/terraform/terraform.tfstate*
