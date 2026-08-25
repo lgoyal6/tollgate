@@ -79,8 +79,9 @@ For anything touching multi-replica behaviour there is a full local cluster path
   read.
 - The Helm chart exposes one custom HPA metric. A second, on admission-rejection
   rate, is a self-contained addition in `deploy/`.
-- Docs: `deploy/paas` has Render, Fly and Railway templates. Another platform is
-  a contained, verifiable contribution.
+- Deploy templates: `deploy/paas` covers Fly and Railway, and `render.yaml` at the
+  repo root drives the Render deploy button. Another platform is a contained,
+  verifiable contribution.
 
 ## Conduct
 
