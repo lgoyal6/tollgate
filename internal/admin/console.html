@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tollgate console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='14' height='2' fill='%231f4d33'/%3E%3Crect x='2' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='6.5' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='11' y='10' width='3' height='5' fill='%2357513f'/%3E%3Crect x='6.5' y='1' width='3' height='5' fill='%231f4d33'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ink: #17190f; --paper: #f4f1e8; --rule: #d6d0bd; --dim: #6b6754;
+    --gate: #1f4d33; --post: #57513f; --alarm: #8c2f21; --card: #fbf9f3;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#eae6d9; --paper:#14150f; --rule:#33352a; --dim:#9b9784;
+            --gate:#7fc09b; --post:#b0a98d; --alarm:#e08a7a; --card:#1c1e16; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+         font:15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { border-bottom:1px solid var(--rule); padding:18px 24px; display:flex;
+           justify-content:space-between; align-items:baseline; gap:16px; flex-wrap:wrap; }
+  h1 { font:600 20px/1 var(--mono); margin:0; letter-spacing:-.01em; }
+  h1 b { color:var(--gate); }
+  .sub { color:var(--dim); font-size:13px; }
+  main { padding:24px; max-width:1100px; margin:0 auto; }
+  section { margin-bottom:32px; }
+  h2 { font:600 13px/1 var(--mono); text-transform:uppercase; letter-spacing:.08em;
+       color:var(--dim); margin:0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:6px; padding:16px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font:600 11px/1 var(--mono); text-transform:uppercase;
+       letter-spacing:.06em; color:var(--dim); padding:0 10px 8px 0; white-space:nowrap; }
+  td { padding:9px 10px 9px 0; border-top:1px solid var(--rule); vertical-align:middle; }
+  td.mono, .mono { font-family:var(--mono); font-size:13px; }
+  .wrap { overflow-x:auto; }
+  button { font:500 13px/1 inherit; padding:7px 11px; border:1px solid var(--rule);
+           background:var(--paper); color:var(--ink); border-radius:5px; cursor:pointer; }
+  button:hover { border-color:var(--gate); }
+  button.primary { background:var(--gate); border-color:var(--gate); color:var(--paper); font-weight:600; }
+  button.danger:hover { border-color:var(--alarm); color:var(--alarm); }
+  button:disabled { opacity:.45; cursor:default; }
+  input, select { font:14px/1 inherit; padding:7px 9px; border:1px solid var(--rule);
+                  border-radius:5px; background:var(--paper); color:var(--ink); width:100%; }
+  label { display:block; font:600 11px/1 var(--mono); text-transform:uppercase;
+          letter-spacing:.06em; color:var(--dim); margin-bottom:5px; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); align-items:end; }
+  .pill { display:inline-block; font:600 11px/1 var(--mono); padding:3px 7px; border-radius:99px;
+          border:1px solid var(--rule); color:var(--dim); }
+  .pill.on { color:var(--gate); border-color:var(--gate); }
+  .pill.off { color:var(--alarm); border-color:var(--alarm); }
+  .gate { border-left:3px solid var(--gate); padding-left:12px; }
+  .secret { background:var(--gate); color:var(--paper); padding:14px 16px; border-radius:6px;
+            margin:12px 0; }
+  .secret code { font-family:var(--mono); font-size:14px; word-break:break-all; display:block;
+                 margin:8px 0; user-select:all; }
+  .secret .why { font-size:12px; opacity:.85; }
+  .err { color:var(--alarm); font-size:13px; margin-top:8px; }
+  .note { color:var(--dim); font-size:12px; margin-top:8px; }
+  #gate-screen { max-width:420px; margin:80px auto; }
+  .hide { display:none !important; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .num { font-family:var(--mono); font-size:13px; text-align:right; }
+  .limited { color:var(--alarm); font-weight:600; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>tollgate<b>.</b> console</h1>
+    <div class="sub">One key per teammate, one budget each. The provider credential stays in this gateway's environment.</div>
+  </div>
+  <div class="row hide" id="hdr-actions">
+    <button id="refresh">Refresh</button>
+    <button id="lock">Lock</button>
+  </div>
+</header>
+
+<main>
+  <div id="gate-screen">
+    <div class="card">
+      <h2>Admin token</h2>
+      <label for="token">ADMIN_TOKEN from the gateway's environment</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste it here">
+      <div class="note">Held in this tab's memory only. Never written to storage, never put in a URL.</div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="unlock">Unlock</button></div>
+      <div class="err hide" id="gate-err"></div>
+    </div>
+  </div>
+
+  <div id="app" class="hide">
+    <div id="secret-slot"></div>
+
+    <section>
+      <h2>Teammates</h2>
+      <div class="card wrap">
+        <table id="tenants">
+          <thead><tr>
+            <th>Tenant</th><th>Policy</th><th>State</th>
+            <th class="num">Requests</th><th class="num">429s</th>
+            <th>Keys</th><th>Routes</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="note" id="usage-note"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Add a teammate</h2>
+      <div class="card gate">
+        <div class="grid">
+          <div><label for="t-id">Tenant id</label><input id="t-id" placeholder="alice" spellcheck="false"></div>
+          <div><label for="t-name">Display name</label><input id="t-name" placeholder="Alice"></div>
+          <div><label for="t-algo">Limiter</label>
+            <select id="t-algo">
+              <option value="sliding_window">sliding window</option>
+              <option value="token_bucket">token bucket</option>
+            </select></div>
+          <div><label for="t-limit">Requests per window</label><input id="t-limit" type="number" value="100" min="1"></div>
+          <div><label for="t-window">Window (seconds)</label><input id="t-window" type="number" value="60" min="1"></div>
+          <div><button class="primary" id="t-create">Create</button></div>
+        </div>
+        <div class="err hide" id="t-err"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Point a teammate at an upstream</h2>
+      <div class="card">
+        <div class="grid">
+          <div><label for="r-tenant">Tenant</label><select id="r-tenant"></select></div>
+          <div><label for="r-prefix">Path prefix</label><input id="r-prefix" value="/anthropic/" spellcheck="false"></div>
+          <div><label for="r-upstream">Upstream</label><input id="r-upstream" value="https://api.anthropic.com" spellcheck="false"></div>
+          <div><label for="r-header">Inject header</label><input id="r-header" value="x-api-key" spellcheck="false"></div>
+          <div><label for="r-env">From env var</label><input id="r-env" value="ANTHROPIC_API_KEY" spellcheck="false"></div>
+          <div><button class="primary" id="r-create">Add route</button></div>
+        </div>
+        <div class="note">The gateway reads that env var at request time and attaches it upstream. The value never enters this page, this API, or Postgres. The teammate's own key is stripped first.</div>
+        <div class="err hide" id="r-err"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Routes</h2>
+      <div class="card wrap">
+        <table id="routes">
+          <thead><tr><th>Tenant</th><th>Prefix</th><th>Upstream</th><th>Credential</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Keys</h2>
+      <div class="card wrap">
+        <table id="keys">
+          <thead><tr><th>Key id</th><th>Tenant</th><th>Status</th><th>Issued</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="note">Only the SHA-256 of each secret is stored, so a leaked database cannot be replayed as keys. Rotate hands out a replacement and leaves the old key working for 24h; revoke kills it now.</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const MOUNT = {{ .Mount }};
+let TOKEN = "";
+let DATA = { tenants: [], routes: [], keys: [], usage: {} };
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(method, path, body) {
+  const res = await fetch(MOUNT + "/api" + path, {
+    method,
+    headers: Object.assign({ "Authorization": "Bearer " + TOKEN },
+                           body ? { "Content-Type": "application/json" } : {}),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { parsed = { error: text }; }
+  if (!res.ok) throw new Error((parsed && parsed.error) || res.status + " " + res.statusText);
+  return parsed;
+}
+
+function showError(id, err) {
+  const el = $(id);
+  el.textContent = err.message || String(err);
+  el.classList.remove("hide");
+}
+function clearError(id) { $(id).classList.add("hide"); }
+
+function showSecret(title, payload) {
+  $("secret-slot").innerHTML =
+    '<div class="secret"><b>' + esc(title) + '</b>' +
+    '<code>' + esc(payload.key) + '</code>' +
+    '<div class="why">Copy it now. Only its hash is stored, so this is the last time anyone can read it. ' +
+    'Give it to ' + esc(payload.tenant) + ' and have them set it as their SDK api_key, with base_url pointed at this gateway.</div></div>';
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function policyOf(t) {
+  return t.algorithm === "sliding_window"
+    ? t.limit + " per " + (t.window_ms / 1000) + "s"
+    : t.rate + "/s burst " + t.burst;
+}
+
+function render() {
+  const tb = $("tenants").querySelector("tbody");
+  tb.innerHTML = DATA.tenants.map(t => {
+    const u = DATA.usage[t.id] || { requests: 0, limited: 0 };
+    return '<tr>' +
+      '<td class="mono">' + esc(t.id) + '<div class="sub">' + esc(t.name) + '</div></td>' +
+      '<td class="mono">' + esc(policyOf(t)) + '</td>' +
+      '<td><span class="pill ' + (t.enabled ? 'on">open' : 'off">shut') + '</span></td>' +
+      '<td class="num">' + u.requests.toLocaleString() + '</td>' +
+      '<td class="num ' + (u.limited > 0 ? 'limited' : '') + '">' + u.limited.toLocaleString() + '</td>' +
+      '<td class="num">' + t.active_keys + '</td>' +
+      '<td class="num">' + t.routes + '</td>' +
+      '<td><div class="row">' +
+        '<button data-issue="' + esc(t.id) + '">Issue key</button>' +
+        '<button data-toggle="' + esc(t.id) + '" class="' + (t.enabled ? 'danger' : '') + '">' +
+          (t.enabled ? 'Cut off' : 'Restore') + '</button>' +
+      '</div></td></tr>';
+  }).join("") || '<tr><td colspan="8" class="note">No tenants yet. Add one below.</td></tr>';
+
+  $("usage-note").textContent =
+    "Request and 429 counts come from this gateway process's own metrics registry, so behind multiple replicas they show this replica's share, not the fleet's. Scrape /metrics for the fleet-wide numbers.";
+
+  const sel = $("r-tenant");
+  sel.innerHTML = DATA.tenants.map(t => '<option value="' + esc(t.id) + '">' + esc(t.id) + '</option>').join("");
+
+  $("routes").querySelector("tbody").innerHTML = DATA.routes.map(r =>
+    '<tr><td class="mono">' + esc(r.tenant_id) + '</td>' +
+    '<td class="mono">' + esc(r.path_prefix) + '</td>' +
+    '<td class="mono">' + esc(r.upstream) + '</td>' +
+    '<td class="mono">' + (r.credential_set ? '$' + esc(r.credential_from) : '<span class="note">none</span>') + '</td>' +
+    '<td><button class="danger" data-delroute="' + r.id + '">Delete</button></td></tr>'
+  ).join("") || '<tr><td colspan="5" class="note">No routes yet.</td></tr>';
+
+  $("keys").querySelector("tbody").innerHTML = DATA.keys.map(k => {
+    const cls = k.status === "active" ? "on" : (k.status === "revoked" ? "off" : "");
+    const dead = k.status === "revoked";
+    return '<tr><td class="mono">' + esc(k.id) + '</td>' +
+      '<td class="mono">' + esc(k.tenant_id) + '</td>' +
+      '<td><span class="pill ' + cls + '">' + esc(k.status) + '</span></td>' +
+      '<td class="mono">' + new Date(k.created_at).toLocaleString() + '</td>' +
+      '<td><div class="row">' +
+        '<button data-rotate="' + esc(k.id) + '"' + (k.status !== "active" ? " disabled" : "") + '>Rotate</button>' +
+        '<button class="danger" data-revoke="' + esc(k.id) + '"' + (dead ? " disabled" : "") + '>Revoke</button>' +
+      '</div></td></tr>';
+  }).join("") || '<tr><td colspan="5" class="note">No keys yet.</td></tr>';
+}
+
+async function load() {
+  DATA = await api("GET", "/overview");
+  DATA.usage = DATA.usage || {};
+  render();
+}
+
+$("unlock").onclick = async () => {
+  TOKEN = $("token").value.trim();
+  if (!TOKEN) return;
+  clearError("gate-err");
+  try {
+    await load();
+    $("token").value = "";
+    $("gate-screen").classList.add("hide");
+    $("app").classList.remove("hide");
+    $("hdr-actions").classList.remove("hide");
+  } catch (e) { TOKEN = ""; showError("gate-err", e); }
+};
+$("token").addEventListener("keydown", e => { if (e.key === "Enter") $("unlock").click(); });
+
+$("refresh").onclick = () => load().catch(e => alert(e.message));
+$("lock").onclick = () => {
+  TOKEN = ""; DATA = { tenants: [], routes: [], keys: [], usage: {} };
+  $("secret-slot").innerHTML = "";
+  $("app").classList.add("hide");
+  $("hdr-actions").classList.add("hide");
+  $("gate-screen").classList.remove("hide");
+};
+
+$("t-create").onclick = async () => {
+  clearError("t-err");
+  const algo = $("t-algo").value;
+  const limit = parseInt($("t-limit").value, 10);
+  const windowMs = parseInt($("t-window").value, 10) * 1000;
+  try {
+    await api("POST", "/tenants", {
+      id: $("t-id").value.trim(), name: $("t-name").value.trim() || $("t-id").value.trim(),
+      algorithm: algo, limit: limit, window_ms: windowMs,
+      // A token bucket reads rate and burst instead; derive them from the same
+      // intent so one form drives either limiter.
+      rate: limit / Math.max(1, windowMs / 1000), burst: limit,
+    });
+    $("t-id").value = ""; $("t-name").value = "";
+    await load();
+  } catch (e) { showError("t-err", e); }
+};
+
+$("r-create").onclick = async () => {
+  clearError("r-err");
+  try {
+    await api("POST", "/tenants/" + encodeURIComponent($("r-tenant").value) + "/routes", {
+      path_prefix: $("r-prefix").value.trim(),
+      upstream: $("r-upstream").value.trim(),
+      strip_prefix: true,
+      auth_header: $("r-header").value.trim(),
+      auth_env: $("r-env").value.trim(),
+    });
+    await load();
+  } catch (e) { showError("r-err", e); }
+};
+
+document.addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b || !TOKEN) return;
+  try {
+    if (b.dataset.issue) {
+      showSecret("New key for " + b.dataset.issue,
+        await api("POST", "/tenants/" + encodeURIComponent(b.dataset.issue) + "/keys", {}));
+      await load();
+    } else if (b.dataset.toggle) {
+      const t = DATA.tenants.find(x => x.id === b.dataset.toggle);
+      await api("PUT", "/tenants/" + encodeURIComponent(t.id), {
+        name: t.name, enabled: !t.enabled, algorithm: t.algorithm,
+        rate: t.rate, burst: t.burst, window_ms: t.window_ms, limit: t.limit,
+      });
+      await load();
+    } else if (b.dataset.rotate) {
+      showSecret("Replacement key (old one works for 24h)",
+        await api("POST", "/keys/" + encodeURIComponent(b.dataset.rotate) + "/rotate", {}));
+      await load();
+    } else if (b.dataset.revoke) {
+      if (!confirm("Revoke " + b.dataset.revoke + " immediately? It stops working on every replica within seconds.")) return;
+      await api("DELETE", "/keys/" + encodeURIComponent(b.dataset.revoke));
+      await load();
+    } else if (b.dataset.delroute) {
+      if (!confirm("Delete this route?")) return;
+      await api("DELETE", "/routes/" + encodeURIComponent(b.dataset.delroute));
+      await load();
+    }
+  } catch (e) { alert(e.message); }
+});
+</script>
+</body>
+</html>
