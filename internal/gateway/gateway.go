@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/lgoyal6/tollgate/internal/admin"
 	"github.com/lgoyal6/tollgate/internal/config"
 	"github.com/lgoyal6/tollgate/internal/middleware"
 	"github.com/lgoyal6/tollgate/internal/observability"
@@ -39,6 +40,9 @@ type Gateway struct {
 	watcher *store.Watcher
 	limiter ratelimit.Limiter
 	redis   *redis.Client
+	// admin is nil unless ADMIN_TOKEN is set, in which case there is no
+	// management surface on either listener.
+	admin *admin.Server
 
 	ready atomic.Bool
 }
@@ -56,6 +60,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		metrics: observability.NewMetrics(),
 		store:   st,
 		watcher: store.NewWatcher(st, logger, cfg.ReloadPollInterval, cfg.ReloadDebounce),
+	}
+
+	g.admin, err = admin.New(st, usageFromMetrics{g.metrics}, cfg.AdminToken, logger)
+	if err != nil {
+		st.Close()
+		return nil, fmt.Errorf("initializing management API: %w", err)
+	}
+	if g.admin == nil {
+		logger.Info("management API disabled (ADMIN_TOKEN not set)")
+	} else {
+		logger.Info("management API enabled", "path", admin.MountPath)
 	}
 
 	switch cfg.LimiterBackend {
@@ -116,7 +131,26 @@ func (g *Gateway) handler() http.Handler {
 	if g.limiter != nil {
 		mws = append(mws, middleware.RateLimit(g.limiter, g.cfg.RateLimitFailOpen, g.metrics, g.logger))
 	}
-	return middleware.Chain(px, mws...)
+	chain := middleware.Chain(px, mws...)
+	if g.admin == nil {
+		return chain
+	}
+	// The management surface is also mounted here, not just on the admin
+	// listener, because a one-container PaaS deploy only routes one public
+	// port. It is matched ahead of route lookup, so a tenant route cannot
+	// shadow it, and it sits outside the tenant middleware chain because it
+	// authenticates with the admin token rather than a tenant API key.
+	mux := http.NewServeMux()
+	mux.Handle(admin.MountPath+"/", g.adminSurface())
+	mux.Handle(admin.MountPath, http.RedirectHandler(admin.MountPath+"/", http.StatusMovedPermanently))
+	mux.Handle("/", chain)
+	return mux
+}
+
+// adminSurface wraps the management handler so a bug in it cannot take down
+// the connection it arrived on.
+func (g *Gateway) adminSurface() http.Handler {
+	return middleware.Chain(g.admin.Handler(), middleware.Recover(g.logger))
 }
 
 // adminHandler serves health, metrics and pprof on the admin port so none of
@@ -135,6 +169,10 @@ func (g *Gateway) adminHandler() http.Handler {
 		fmt.Fprintln(w, "ready")
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g.metrics.Registry, promhttp.HandlerOpts{}))
+	if g.admin != nil {
+		mux.Handle(admin.MountPath+"/", g.adminSurface())
+		mux.Handle(admin.MountPath, http.RedirectHandler(admin.MountPath+"/", http.StatusMovedPermanently))
+	}
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
