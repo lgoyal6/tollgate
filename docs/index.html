@@ -16,7 +16,22 @@
 </head>
 <body>
 
-<header class="gut">
+<nav class="topbar">
+  <a class="brand" href="https://lakshgoyal.com">Laksh Goyal<span>.</span></a>
+  <div class="navlinks">
+    <a href="https://github.com/lgoyal6/tollgate">GitHub</a>
+    <a href="https://www.linkedin.com/in/lakshgoyal">LinkedIn</a>
+  </div>
+</nav>
+<nav class="tabs" id="tabs" aria-label="Sections">
+  <a href="#home">Home</a>
+  <a href="#live">Live</a>
+  <a href="#simulate">Simulate</a>
+  <a href="#results">Results</a>
+  <a href="#source">Source</a>
+</nav>
+
+<header id="home" class="gut">
   <div>
     <div class="eyebrow">multi-tenant api gateway &middot; go &middot; redis-lua rate limiting &middot;
       <span class="led-label" id="led-label">loading engine&hellip;</span></div>
@@ -28,7 +43,7 @@
     to WebAssembly on a virtual clock.</p>
     <div class="hdr-links">
       <a href="https://github.com/lgoyal6/tollgate">github.com/lgoyal6/tollgate</a>
-      <a href="#bill">skip to the bill &darr;</a>
+      <a href="#live">try the live one &darr;</a>
     </div>
   </div>
   <div>
@@ -41,9 +56,46 @@
   </div>
 </header>
 
-<section id="experiment" class="gut">
+<section id="live" class="gut">
   <div class="sec-bar">
-    <span class="no">01</span><h2>Run the experiment</h2>
+    <span class="no">01</span><h2>Spend from a bucket you share with strangers</h2>
+    <span class="lede">a real gateway, a real Redis, one token bucket for everyone reading this page</span>
+  </div>
+
+  <div class="bench">
+    <div class="toolbar">
+      <span class="live-state" id="live-state">checking the gateway&hellip;</span>
+      <button class="btn btn-ox" id="send" disabled>Send a request</button>
+      <button class="btn" id="burst" disabled>Send 15, fast</button>
+      <span class="live-meta" id="live-meta"></span>
+    </div>
+
+    <div class="bucket-wrap">
+      <div class="bucket" id="bucket" role="img" aria-label="tokens remaining in the shared bucket"></div>
+      <dl class="live-read">
+        <div><dt>tokens left</dt><dd id="l-rem">&ndash;</dd></div>
+        <div><dt>bucket size</dt><dd id="l-limit">&ndash;</dd></div>
+        <div><dt>refills</dt><dd id="l-refill">1/s</dd></div>
+        <div><dt>your requests</dt><dd id="l-mine">0</dd></div>
+        <div><dt>you were limited</dt><dd id="l-429">0</dd></div>
+      </dl>
+    </div>
+
+    <div class="log" id="log" aria-live="polite"></div>
+  </div>
+
+  <p class="fig"><b>Fig. 1.</b> This is not a simulation. The button calls a tollgate gateway
+  running on Railway, which checks one token bucket in Redis and then proxies to a demo
+  upstream. The bucket holds 12 and refills at 1 a second, and it is the same bucket for every
+  visitor: if the number drops without you touching anything, that was somebody else. A 429
+  here is the gateway's real answer, carrying the real <code>Retry-After</code>.
+  <i>The service sleeps when nobody is using it, so the first request after a quiet spell
+  takes a few seconds to wake it.</i></p>
+</section>
+
+<section id="simulate" class="gut">
+  <div class="sec-bar">
+    <span class="no">02</span><h2>Run the experiment</h2>
     <span class="lede">one tenant, one policy, N replicas behind a round-robin balancer; only the counter's home differs</span>
   </div>
   <div class="bench">
@@ -67,7 +119,7 @@
     </div>
     <svg id="chart" viewBox="0 0 1200 380" role="img" aria-label="admitted requests per second for both limiter designs against the policy ceiling"></svg>
   </div>
-  <p class="fig"><b>Fig. 1.</b> Admitted requests per second over 30 simulated seconds. The
+  <p class="fig"><b>Fig. 2.</b> Admitted requests per second over 30 simulated seconds. The
   dotted line is the offered load; the fine rule is the policy. The dashed gateway lets every
   replica count on its own, so each one happily admits a full ceiling; the solid gateway makes
   every replica check one shared store before admitting, the exact check the Redis Lua scripts
@@ -76,9 +128,9 @@
   it.</i></p>
 </section>
 
-<section id="bill" class="gut">
+<section id="results" class="gut">
   <div class="sec-bar">
-    <span class="no">02</span><h2>Read the bill</h2>
+    <span class="no">03</span><h2>Read the bill</h2>
     <span class="lede">on a shared LLM key, over-admission is not an abstraction; it is someone's money</span>
   </div>
   <div class="measure-grid">
@@ -108,9 +160,9 @@
   </div>
 </section>
 
-<section id="saw" class="gut">
+<section id="source" class="gut">
   <div class="sec-bar">
-    <span class="no">03</span><h2>What you just saw</h2>
+    <span class="no">04</span><h2>What you just saw</h2>
     <span class="lede">every behavior above is a specific piece of the gateway</span>
   </div>
   <div class="map">
@@ -161,5 +213,6 @@
 
 <script src="demo/wasm_exec.js"></script>
 <script src="app.js"></script>
+<script src="live.js"></script>
 </body>
 </html>
