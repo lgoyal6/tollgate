@@ -80,17 +80,29 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 	case "none":
 		logger.Warn("rate limiting DISABLED: every request is admitted; benchmark floor only")
 	default:
-		g.redis = redis.NewClient(&redis.Options{
-			Addr:         cfg.RedisAddr,
-			DialTimeout:  2 * time.Second,
-			ReadTimeout:  500 * time.Millisecond,
-			WriteTimeout: 500 * time.Millisecond,
-			PoolSize:     64,
-			MinIdleConns: 8,
-		})
+		// A managed Redis hands you a URL with credentials in it; a local one
+		// is just host:port. Take the URL when it is set and keep the timeouts
+		// either way, because the limiter is on the request path and must not
+		// be allowed to hang it.
+		opts := &redis.Options{Addr: cfg.RedisAddr}
+		target := cfg.RedisAddr
+		if cfg.RedisURL != "" {
+			parsed, err := redis.ParseURL(cfg.RedisURL)
+			if err != nil {
+				st.Close()
+				return nil, fmt.Errorf("parsing REDIS_URL: %w", err)
+			}
+			opts, target = parsed, parsed.Addr
+		}
+		opts.DialTimeout = 2 * time.Second
+		opts.ReadTimeout = 500 * time.Millisecond
+		opts.WriteTimeout = 500 * time.Millisecond
+		opts.PoolSize = 64
+		opts.MinIdleConns = 8
+		g.redis = redis.NewClient(opts)
 		if err := g.redis.Ping(ctx).Err(); err != nil {
 			st.Close()
-			return nil, fmt.Errorf("pinging redis at %s: %w", cfg.RedisAddr, err)
+			return nil, fmt.Errorf("pinging redis at %s: %w", target, err)
 		}
 		g.limiter = ratelimit.NewRedisLimiter(g.redis)
 	}
