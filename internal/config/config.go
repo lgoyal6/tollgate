@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -55,6 +56,10 @@ type Config struct {
 	// AccessLogSample logs 1 in N requests (1 = every request).
 	AccessLogSample int
 	LogLevel        string
+	// CORSOrigins is the explicit allow-list of browser origins. Empty means
+	// no browser may call the gateway, which is the right default for a
+	// service holding somebody else's provider key.
+	CORSOrigins []string
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -70,6 +75,7 @@ func Load() (Config, error) {
 		ServiceName:    getenv("OTEL_SERVICE_NAME", "tollgate"),
 		Version:        getenv("TOLLGATE_VERSION", "dev"),
 		LogLevel:       getenv("LOG_LEVEL", "info"),
+		CORSOrigins:    splitList(os.Getenv("CORS_ORIGINS")),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
@@ -194,4 +200,19 @@ func getFloat(key string, def float64) (float64, error) {
 		return 0, fmt.Errorf("parsing %s: %w", key, err)
 	}
 	return f, nil
+}
+
+// splitList parses a comma-separated env var, trimming blanks.
+func splitList(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
