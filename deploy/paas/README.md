@@ -13,3 +13,18 @@ What is here:
 
 So the button in the README is Render's, and it is the only true one-click path
 of the three. The other two are short CLI sequences, documented in each file.
+
+## Deploying the demo upstream too
+
+The gateway is only half a deploy: every route needs something to proxy to.
+`Dockerfile.upstream` exists for that. The main Dockerfile builds the upstream
+as a named stage, and a PaaS builds whatever stage is last with no way to pick
+one, so the demo backend needs a file whose default stage is the upstream.
+
+On Railway that is a second service in the same project with
+`RAILWAY_DOCKERFILE_PATH=Dockerfile.upstream`, reachable from the gateway over
+the private network at `http://upstream.railway.internal:9000`. Render and Fly
+take the same file through `dockerfilePath` and `build.dockerfile`.
+
+The gateway itself needs `AUTO_MIGRATE=true` on any of the three: the image is
+distroless and nothing else in the container can apply a migration.

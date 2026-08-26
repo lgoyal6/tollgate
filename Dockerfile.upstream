@@ -1,0 +1,17 @@
+# The demo upstream, as its own build.
+#
+# The main Dockerfile builds it as a named stage, but a PaaS builds whatever
+# stage is last and offers no way to pick one, so deploying the demo backend
+# next to the gateway needs a file whose default stage *is* the upstream.
+# deploy/paas covers the gateway; this is the other half.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/upstream ./cmd/upstream
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/upstream /upstream
+EXPOSE 9000
+ENTRYPOINT ["/upstream"]
