@@ -6,7 +6,7 @@
 // mathematical ceiling LIMIT * (windows + 1).
 //
 // Run once against RATE_LIMITER=redis (admitted ≈ ceiling) and once against
-// RATE_LIMITER=memory (admitted ≈ replicas × ceiling — the naive failure).
+// RATE_LIMITER=memory (admitted ≈ replicas × ceiling - the naive failure).
 //
 //   k6 run -e LIMIT=300 -e DURATION=30 -e KEY=$K6_KEY_METERED \
 //          -e LABEL=redis loadtest/correctness.js

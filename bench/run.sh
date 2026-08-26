@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reproduces bench/results/limiter_cost.txt end to end (~25 min):
 #
-#   (A) latency cost of the global limiter — 3 arms, identical everything:
+#   (A) latency cost of the global limiter - 3 arms, identical everything:
 #         redis   global limiter, atomic Redis Lua (the default)
 #         memory  per-replica in-process limiter (no Redis in request path)
 #         none    limiter bypassed entirely (floor)
@@ -144,7 +144,7 @@ wait_ready
 # ------------------------------------------------- section 1: Redis floor
 log "measuring bare Redis RTT floor"
 {
-  echo "SECTION 1 — bare Redis RTT, measured from a sibling container on the same"
+  echo "SECTION 1 - bare Redis RTT, measured from a sibling container on the same"
   echo "docker network (the gateway's exact network path). Theoretical floor for"
   echo "the redis-arm delta; anything above this is client/gateway code."
   echo
@@ -158,7 +158,7 @@ log "measuring bare Redis RTT floor"
     | sed -n '/^Summary:/,$p' || true
   echo
   echo "-- redis-benchmark EVALSHA tokenbucket.lua, 1 connection, 20k requests"
-  echo "   (script execution included — the exact hot-path command):"
+  echo "   (script execution included - the exact hot-path command):"
   SHA=$(docker run --rm -i --network "$NET" redis:7-alpine redis-cli -h redis -x script load <internal/ratelimit/tokenbucket.lua)
   docker run --rm --network "$NET" redis:7-alpine \
     redis-benchmark -h redis -c 1 --threads 1 -n 20000 --precision 3 \

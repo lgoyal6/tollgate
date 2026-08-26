@@ -3,7 +3,7 @@
 # multiplies every tenant's quota by the replica count; the Redis limiter
 # holds the global limit exactly.
 #
-# Runs the correctness k6 suite twice — once per limiter backend — by
+# Runs the correctness k6 suite twice - once per limiter backend - by
 # redeploying the Helm release with limiter=memory and then limiter=redis.
 # Results land in loadtest/results/correctness-{memory,redis}.json.
 #

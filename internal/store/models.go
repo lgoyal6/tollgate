@@ -44,7 +44,7 @@ type Route struct {
 
 	// Upstream credential injection: when Header and Env are set, the proxy
 	// sends `<Header>: <Prefix><value of $Env>` upstream. The tenant's own
-	// gateway key is always stripped first, so callers never need — or see —
+	// gateway key is always stripped first, so callers never need - or see -
 	// the real provider credential (e.g. a team's shared Anthropic key).
 	UpstreamAuthHeader string
 	UpstreamAuthEnv    string

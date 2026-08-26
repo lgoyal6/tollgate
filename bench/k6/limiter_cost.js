@@ -1,5 +1,5 @@
 // One arm x one run of the limiter-cost benchmark: constant arrival rate,
-// with a warmup scenario whose samples are DISCARDED — only the
+// with a warmup scenario whose samples are DISCARDED - only the
 // `{scenario:measure}` sub-metrics are reported. The two scenarios run
 // back-to-back so load never dips between warmup and measurement.
 //
@@ -56,7 +56,7 @@ export function setup() {
   if (!KEY) throw new Error("KEY env is required");
   const res = http.get(`${BASE}${URL_PATH}`, params);
   if (res.status !== 200) {
-    throw new Error(`probe request got ${res.status}, expected 200 — is the stack seeded?`);
+    throw new Error(`probe request got ${res.status}, expected 200 - is the stack seeded?`);
   }
 }
 

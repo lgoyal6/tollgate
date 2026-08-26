@@ -43,7 +43,7 @@ func IdempotentMethod(method string) bool {
 }
 
 // RetryableStatus reports whether an upstream status is worth another
-// attempt: transient gateway-class errors only. 500 is excluded — it usually
+// attempt: transient gateway-class errors only. 500 is excluded - it usually
 // means the upstream executed and broke, not that it never saw the request.
 func RetryableStatus(status int) bool {
 	switch status {
