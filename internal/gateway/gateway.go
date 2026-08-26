@@ -47,10 +47,50 @@ type Gateway struct {
 	ready atomic.Bool
 }
 
+// retryDial runs fn until it succeeds or the budget runs out, backing off
+// between attempts.
+//
+// A dependency being unreachable for the first few seconds of a boot is
+// normal, not exceptional: Kubernetes starts containers in no particular
+// order, a restarted Postgres takes a moment to accept connections, and a
+// platform that sleeps idle services wakes them on the first connection
+// attempt, which by definition fails. Exiting on the first error turns all
+// three into a crash loop.
+func retryDial(ctx context.Context, logger *slog.Logger, what string, fn func(context.Context) error) error {
+	const budget = 90 * time.Second
+	deadline := time.Now().Add(budget)
+	wait := 500 * time.Millisecond
+	var err error
+	for attempt := 1; ; attempt++ {
+		if err = fn(ctx); err == nil {
+			if attempt > 1 {
+				logger.Info("dependency reachable", "what", what, "attempts", attempt)
+			}
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s unreachable after %s: %w", what, budget, err)
+		}
+		logger.Warn("dependency not ready, retrying", "what", what, "attempt", attempt, "in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		if wait < 5*time.Second {
+			wait *= 2
+		}
+	}
+}
+
 // New builds but does not start the gateway.
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway, error) {
-	st, err := store.New(ctx, cfg.DatabaseURL)
-	if err != nil {
+	var st *store.Store
+	if err := retryDial(ctx, logger, "postgres", func(ctx context.Context) error {
+		var err error
+		st, err = store.New(ctx, cfg.DatabaseURL)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("initializing store: %w", err)
 	}
 
@@ -74,6 +114,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		watcher: store.NewWatcher(st, logger, cfg.ReloadPollInterval, cfg.ReloadDebounce),
 	}
 
+	var err error
 	g.admin, err = admin.New(st, usageFromMetrics{g.metrics}, cfg.AdminToken, logger)
 	if err != nil {
 		st.Close()
@@ -112,7 +153,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		opts.PoolSize = 64
 		opts.MinIdleConns = 8
 		g.redis = redis.NewClient(opts)
-		if err := g.redis.Ping(ctx).Err(); err != nil {
+		if err := retryDial(ctx, logger, "redis", func(ctx context.Context) error {
+			return g.redis.Ping(ctx).Err()
+		}); err != nil {
 			st.Close()
 			return nil, fmt.Errorf("pinging redis at %s: %w", target, err)
 		}
