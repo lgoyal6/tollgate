@@ -17,6 +17,10 @@ type Config struct {
 
 	DatabaseURL string
 	RedisAddr   string
+	// RedisURL is the full redis://user:pass@host:port/db form. Managed Redis
+	// always requires auth, and RedisAddr alone cannot carry a password, so a
+	// hosted deploy sets this instead. It wins when both are present.
+	RedisURL string
 
 	// AdminToken gates the management API and console. Empty means the
 	// management surface is not built at all: a gateway that was deployed
@@ -70,6 +74,7 @@ func Load() (Config, error) {
 		AdminAddr:      getenv("ADMIN_ADDR", ":9090"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		RedisAddr:      getenv("REDIS_ADDR", "localhost:6379"),
+		RedisURL:       os.Getenv("REDIS_URL"),
 		AdminToken:     os.Getenv("ADMIN_TOKEN"),
 		LimiterBackend: getenv("RATE_LIMITER", "redis"),
 		ServiceName:    getenv("OTEL_SERVICE_NAME", "tollgate"),

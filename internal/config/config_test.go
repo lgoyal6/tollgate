@@ -60,3 +60,19 @@ func TestAdminTokenDefaultsToEmpty(t *testing.T) {
 		t.Fatalf("AdminToken = %q, want empty so the management surface stays off by default", cfg.AdminToken)
 	}
 }
+
+func TestRedisURLIsReadWhenSet(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x/y")
+	t.Setenv("REDIS_URL", "redis://default:secret@redis.internal:6379")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RedisURL != "redis://default:secret@redis.internal:6379" {
+		t.Fatalf("RedisURL = %q, want the value from the environment", cfg.RedisURL)
+	}
+	// REDIS_ADDR keeps its default so a local run is unaffected.
+	if cfg.RedisAddr != "localhost:6379" {
+		t.Fatalf("RedisAddr = %q, want the unchanged default", cfg.RedisAddr)
+	}
+}
