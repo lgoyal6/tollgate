@@ -64,6 +64,9 @@ type Config struct {
 	// no browser may call the gateway, which is the right default for a
 	// service holding somebody else's provider key.
 	CORSOrigins []string
+	// AutoMigrate applies schema migrations at boot. Off by default; on for a
+	// PaaS deploy, where nothing else in the container can do it.
+	AutoMigrate bool
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -91,6 +94,9 @@ func Load() (Config, error) {
 
 	var err error
 	if cfg.RateLimitFailOpen, err = getBool("RATE_LIMIT_FAIL_OPEN", true); err != nil {
+		return Config{}, err
+	}
+	if cfg.AutoMigrate, err = getBool("AUTO_MIGRATE", false); err != nil {
 		return Config{}, err
 	}
 	if cfg.HedgingEnabled, err = getBool("HEDGING_ENABLED", false); err != nil {
