@@ -11,6 +11,7 @@
 //	tollgate-admin rotate-key    -key k1a2b3c4d5e6 -grace 24h
 //	tollgate-admin revoke-key    -key k1a2b3c4d5e6
 //	tollgate-admin list
+//	tollgate-admin migrate
 package main
 
 import (
@@ -35,7 +36,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: tollgate-admin <create-tenant|add-route|issue-key|rotate-key|revoke-key|list> [flags]")
+		return fmt.Errorf("usage: tollgate-admin <migrate|create-tenant|add-route|issue-key|rotate-key|revoke-key|list> [flags]")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -66,6 +67,8 @@ func run(args []string) error {
 		return revokeKey(ctx, st, args[1:])
 	case "list":
 		return list(ctx, st)
+	case "migrate":
+		return st.Migrate(ctx)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}

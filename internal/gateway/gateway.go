@@ -54,6 +54,18 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		return nil, fmt.Errorf("initializing store: %w", err)
 	}
 
+	// A PaaS provisions Postgres, hands the container a URL, and gives you no
+	// shell to apply a .sql file with: the image is distroless and there is no
+	// psql in it. Opt-in, because anywhere with a real deploy pipeline should
+	// run migrations as their own step.
+	if cfg.AutoMigrate {
+		if err := st.Migrate(ctx); err != nil {
+			st.Close()
+			return nil, fmt.Errorf("applying migrations: %w", err)
+		}
+		logger.Info("schema migrations applied on boot (AUTO_MIGRATE)")
+	}
+
 	g := &Gateway{
 		cfg:     cfg,
 		logger:  logger,
