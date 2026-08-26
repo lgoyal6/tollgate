@@ -31,7 +31,7 @@ func (o hedgeOutcome) usable() bool {
 }
 
 // Hedge races a primary attempt against one delayed backup. If the primary
-// answers before the delay expires, the backup never launches — hedging
+// answers before the delay expires, the backup never launches - hedging
 // spends extra upstream work only on the slow tail. Once both are in flight
 // the first usable response (no transport error, not a 5xx) wins; the
 // loser's context is cancelled and its response drained.

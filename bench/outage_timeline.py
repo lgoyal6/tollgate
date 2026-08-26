@@ -66,7 +66,7 @@ def main():
             b["lat"].append(float(row["metric_value"]))
 
     if not bins:
-        print("no http_req_duration rows found in CSV — outage run produced no data", file=sys.stderr)
+        print("no http_req_duration rows found in CSV - outage run produced no data", file=sys.stderr)
         sys.exit(1)
 
     secs = sorted(bins)
@@ -113,7 +113,7 @@ def main():
         "timeline": [],
     }
 
-    print("SECTION 5 — Redis-unavailable behaviour (one run, timestamps epoch-second resolution)")
+    print("SECTION 5 - Redis-unavailable behaviour (one run, timestamps epoch-second resolution)")
     print(f"  offered load: metered tenant (sliding window, limit 300/s), constant arrival")
     print(f"  t_kill      = {t_kill:.1f} (docker compose kill redis)")
     print(f"  t_startcmd  = {t_startcmd:.1f} (docker compose start redis, +{t_startcmd - t_kill:.1f}s)")
@@ -135,11 +135,11 @@ def main():
         verdict = []
         if o["s503"] == 0 and o["s200"] > 0 and o["s429"] == 0:
             verdict.append("FAIL-OPEN observed: during the outage every request was admitted (200),")
-            verdict.append("zero 429s and zero 503s — the limit silently ceased to exist.")
+            verdict.append("zero 429s and zero 503s - the limit silently ceased to exist.")
         elif o["s503"] > 0 and o["s200"] == 0:
             verdict.append("FAIL-CLOSED observed: requests were rejected 503 during the outage.")
         else:
-            verdict.append("MIXED behaviour during outage — inspect the timeline below.")
+            verdict.append("MIXED behaviour during outage - inspect the timeline below.")
         for line in verdict:
             print(f"  {line}")
         out["verdict"] = " ".join(verdict)
@@ -154,7 +154,7 @@ def main():
             b = bins[s]
             print(f"    t+{s - int(t_kill)}s: 200={b['s200']} 429={b['s429']} err={b['err']}")
     else:
-        print("  recovery: NO 429 seen after redis PONG — limiting did NOT resume in-window!")
+        print("  recovery: NO 429 seen after redis PONG - limiting did NOT resume in-window!")
     print()
 
     print("  per-second timeline (offset from kill; negative = before kill):")
