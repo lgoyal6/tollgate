@@ -118,6 +118,7 @@ func (g *Gateway) handler() http.Handler {
 	snapshots := g.watcher.Snapshot
 	mws := []middleware.Middleware{
 		middleware.Recover(g.logger),
+		middleware.CORS(g.cfg.CORSOrigins),
 		middleware.RequestID(),
 		middleware.AccessLog(g.logger, g.cfg.AccessLogEnabled, g.cfg.AccessLogSample),
 		middleware.Metrics(g.metrics),

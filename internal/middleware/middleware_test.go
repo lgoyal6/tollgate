@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,4 +293,49 @@ func TestKeyRotationGraceHeader(t *testing.T) {
 	if rec.Header().Get("X-Api-Key-Deprecated") != "true" {
 		t.Error("grace-window responses must set X-Api-Key-Deprecated")
 	}
+}
+
+func TestCORSAllowsOnlyListedOrigins(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	h := CORS([]string{"https://lgoyal6.github.io"})(next)
+
+	t.Run("listed origin is echoed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+		req.Header.Set("Origin", "https://lgoyal6.github.io")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://lgoyal6.github.io" {
+			t.Fatalf("allow-origin = %q, want the request origin", got)
+		}
+		if rec.Code != http.StatusTeapot {
+			t.Fatalf("status = %d, want the handler to still run", rec.Code)
+		}
+	})
+
+	t.Run("unlisted origin gets no header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("allow-origin = %q, want empty for an unlisted origin", got)
+		}
+	})
+
+	// A preflight carries no Authorization header, so it has to be answered
+	// before Auth ever sees it.
+	t.Run("preflight is answered without reaching the handler", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/v1/x", nil)
+		req.Header.Set("Origin", "https://lgoyal6.github.io")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("preflight status = %d, want 204", rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
+			t.Fatal("preflight must allow the Authorization header")
+		}
+	})
 }

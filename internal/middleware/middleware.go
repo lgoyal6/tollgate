@@ -390,3 +390,42 @@ func RateLimit(limiter ratelimit.Limiter, failOpen bool, m *observability.Metric
 		})
 	}
 }
+
+// CORS answers browser preflight and tags responses with the allowed origin.
+//
+// It sits directly inside Recover and outside Auth, because a preflight OPTIONS
+// carries no Authorization header: run it after Auth and every browser client
+// is rejected before it ever gets to send the real request.
+//
+// Origins are an explicit allow-list, never "*". A gateway holding a shared
+// provider key should not let any page on the internet spend it, and the
+// rate-limit headers below are exposed deliberately so a browser client can
+// read its own remaining budget.
+func CORS(allowed []string) Middleware {
+	allow := make(map[string]bool, len(allowed))
+	for _, o := range allowed {
+		if o != "" {
+			allow[o] = true
+		}
+	}
+	const exposed = "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After, X-Request-Id"
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && allow[origin] {
+				h := w.Header()
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Set("Vary", "Origin")
+				h.Set("Access-Control-Expose-Headers", exposed)
+				if r.Method == http.MethodOptions {
+					h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+					h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+					h.Set("Access-Control-Max-Age", "600")
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
