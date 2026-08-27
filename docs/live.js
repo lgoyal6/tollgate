@@ -67,7 +67,41 @@ function readHeaders(res) {
   return Number(res.headers.get('Retry-After'));
 }
 
-async function send({ quiet = false } = {}) {
+
+  // Walk the request along the four stops, so pressing the button shows what it
+  // did rather than only what came back. On a 429 the limiter turns red and the
+  // upstream stays dark, which is the whole point of the section.
+  const HOPS = ['hop-you', 'hop-gw', 'hop-lim', 'hop-up'];
+  const ARROWS = ['arr-1', 'arr-2', 'arr-3'];
+
+  function pathReset() {
+    HOPS.forEach((h) => { el(h).className = 'hop'; });
+    ARROWS.forEach((a) => { el(a).className = 'arrow'; });
+  }
+
+  async function pathRun(limited) {
+    pathReset();
+    const step = (i) => new Promise((r) => setTimeout(r, i));
+    el('hop-you').classList.add('on'); await step(90);
+    el('arr-1').classList.add('on'); el('hop-gw').classList.add('on'); await step(110);
+    el('arr-2').classList.add('on');
+    if (limited) {
+      el('hop-lim').classList.add('stopped');
+      el('arr-3').classList.add('stopped');
+      el('hop-up').classList.add('skipped');
+      el('path-hint').textContent =
+        'The bucket was empty, so the limiter refused it and the upstream never saw it. ' +
+        'That is a 429 with a Retry-After, and it is what protects the shared key.';
+    } else {
+      el('hop-lim').classList.add('on'); await step(110);
+      el('arr-3').classList.add('on'); el('hop-up').classList.add('on');
+      el('path-hint').textContent =
+        'One token spent. The limiter let it through and the upstream answered, which is the ' +
+        '200 in the log below.';
+    }
+  }
+
+  async function send({ quiet = false } = {}) {
   try {
     const res = await fetch(`${GATEWAY}/demo/echo`, {
       headers: { Authorization: `Bearer ${DEMO_KEY}` },
@@ -85,6 +119,7 @@ async function send({ quiet = false } = {}) {
     }
     setState('up', 'gateway live');
     drawBucket();
+    if (!quiet) pathRun(res.status === 429);
     return res.status;
   } catch (e) {
     log(0, 'could not reach the gateway', true);
@@ -142,9 +177,11 @@ function watch() {
 el('send').addEventListener('click', () => send());
 el('burst').addEventListener('click', async () => {
   el('burst').disabled = true;
+  let last = 200;
   for (let i = 0; i < 15; i++) {
-    await send({ quiet: true });
+    last = await send({ quiet: true });
   }
+  pathRun(last === 429);
   el('burst').disabled = false;
 });
 
