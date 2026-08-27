@@ -83,12 +83,12 @@ func TestVerify(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		raw        string
-		snap       *store.Snapshot
-		wantErr    error
-		wantOK     bool
-		wantGrace  bool
+		name      string
+		raw       string
+		snap      *store.Snapshot
+		wantErr   error
+		wantOK    bool
+		wantGrace bool
 	}{
 		{
 			name: "active key accepted",

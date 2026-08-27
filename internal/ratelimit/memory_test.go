@@ -11,8 +11,8 @@ import (
 // fakeClock lets tests move time deterministically.
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) now() time.Time                { return c.t }
-func (c *fakeClock) advance(d time.Duration)       { c.t = c.t.Add(d) }
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestMemoryLimiter() (*MemoryLimiter, *fakeClock) {
 	clock := &fakeClock{t: time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)}
