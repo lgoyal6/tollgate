@@ -1,3 +1,9 @@
+<a href="https://lgoyal6.github.io/tollgate/">
+  <img alt="tollgate - open the live demo" src="docs/og.png">
+</a>
+
+**[Open the live demo](https://lgoyal6.github.io/tollgate/)** - The real limiter code in your tab: watch per-replica counters admit 3x the policy while the shared store holds the ceiling exact, then read what the difference costs on a shared key.
+
 # tollgate
 
 Every hackathon team I've been on ends up sharing one LLM API key. It gets pasted into the group chat, someone's agent loop goes runaway at 3am, and the shared budget is gone before judging. The fixes people actually use - "everyone be careful" and rotating the key after each scare - aren't fixes.
@@ -11,8 +17,6 @@ Sharing one upstream fairly turns out to be a multi-tenancy problem, and the par
 Alice's key goes in, the gateway strips it and attaches the team's shared
 credential on the way out, and her fourth request in a minute is her own
 problem. Reproduce that recording with `./docs/demo-setup.sh && vhs docs/demo.tape`.
-
-**Live demo:** [lgoyal6.github.io/tollgate](https://lgoyal6.github.io/tollgate/), the real limiter code in your tab: watch per-replica counters admit 3x the policy while the shared store holds the ceiling exact, then read what the difference costs on a shared key.
 
 Everything interesting is hand-rolled on purpose - the token bucket and sliding-window-log limiters, the circuit breaker, jittered retries, request hedging, and the reverse proxy itself. The only dependencies are the Redis client, the Postgres driver, OpenTelemetry, and the Prometheus client. Router is stdlib `net/http`.
 
