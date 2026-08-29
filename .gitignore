@@ -7,3 +7,6 @@ deploy/terraform/.terraform.lock.hcl
 deploy/terraform/terraform.tfstate*
 *.test
 .DS_Store
+
+# graphify knowledge graph (local index, not source)
+graphify-out/
