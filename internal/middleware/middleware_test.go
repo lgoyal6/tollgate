@@ -66,7 +66,7 @@ func chainFor(snap *store.Snapshot, limiter ratelimit.Limiter, failOpen bool) ht
 		Recover(testLogger),
 		RequestID(),
 		Metrics(m),
-		Auth(snapshots, m),
+		Auth(snapshots, m, nil),
 		Router(snapshots),
 		RateLimit(limiter, failOpen, m, testLogger),
 	)
@@ -210,7 +210,7 @@ func TestRequestIDEchoAndPropagation(t *testing.T) {
 	})
 	m := observability.NewMetrics()
 	snapshots := func() *store.Snapshot { return snap }
-	h := Chain(inner, RequestID(), Auth(snapshots, m), Router(snapshots))
+	h := Chain(inner, RequestID(), Auth(snapshots, m, nil), Router(snapshots))
 
 	t.Run("generates an id", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
@@ -245,7 +245,7 @@ func TestAuthHeaderStrippedBeforeProxy(t *testing.T) {
 	})
 	m := observability.NewMetrics()
 	snapshots := func() *store.Snapshot { return snap }
-	h := Chain(inner, RequestID(), Auth(snapshots, m), Router(snapshots))
+	h := Chain(inner, RequestID(), Auth(snapshots, m, nil), Router(snapshots))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
