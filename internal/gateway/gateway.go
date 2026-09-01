@@ -285,11 +285,16 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go g.watcher.Run(watchCtx)
 	go g.mirrorReloadCounters(watchCtx)
 
+	tlsCfg, err := listenerTLS(g.cfg)
+	if err != nil {
+		return fmt.Errorf("configuring TLS: %w", err)
+	}
 	mainSrv := &http.Server{
 		Addr:              g.cfg.ListenAddr,
 		Handler:           g.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		TLSConfig:         tlsCfg,
 	}
 	adminSrv := &http.Server{
 		Addr:              g.cfg.AdminAddr,
@@ -303,8 +308,17 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 	errCh := make(chan error, 2)
 	go func() {
-		g.logger.Info("gateway listening", "addr", g.cfg.ListenAddr, "limiter", limiterName)
-		if err := mainSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		g.logger.Info("gateway listening",
+			"addr", g.cfg.ListenAddr, "limiter", limiterName,
+			"tls", tlsCfg != nil, "client_certs", tlsCfg != nil && tlsCfg.ClientCAs != nil)
+		// The certificate and key are already in TLSConfig, so both arguments
+		// are empty; ServeTLS with a nil TLSConfig would be an error, which is
+		// why the cleartext case goes to ListenAndServe instead.
+		serve := mainSrv.ListenAndServe
+		if tlsCfg != nil {
+			serve = func() error { return mainSrv.ListenAndServeTLS("", "") }
+		}
+		if err := serve(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("main listener: %w", err)
 		}
 	}()
