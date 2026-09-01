@@ -1,0 +1,94 @@
+name: ci
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  # Formatting, vet, build and the unit suite. gofmt is checked by listing
+  # what it would change rather than by rewriting: a formatter that fixes the
+  # tree in CI is a formatter nobody runs locally.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would change:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  # Its own job rather than a flag on the one above. The gateway's whole
+  # premise is concurrent: a shared limiter, a hot-reloaded config snapshot
+  # read by every request, a JWKS cache with an in-flight fetch collapsed
+  # across goroutines, and a token cache read under load. A data race in any
+  # of those is a correctness bug that a serial test will never show, so it
+  # gets a check of its own that can be pointed at.
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+
+  # The distributed limiter against a real Redis.
+  #
+  # The token bucket and sliding window are Lua, and their correctness claim is
+  # that the check-and-decrement is atomic inside the script, so N concurrent
+  # callers can never be admitted past the limit. That is not a claim the
+  # in-memory limiter can stand in for, and the tests skip themselves without
+  # TOLLGATE_TEST_REDIS, which means without this job they were silently not
+  # running anywhere.
+  redis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: limiter against redis
+        env:
+          TOLLGATE_TEST_REDIS: localhost:6379
+        # -count=1 so a cached pass from the job above cannot stand in for a
+        # run that actually reached Redis.
+        run: go test -count=1 -v ./internal/ratelimit/
+
+  # The image the PaaS templates and the Helm chart both deploy. A Dockerfile
+  # that stopped building would only show up at deploy time otherwise, which
+  # is the worst place to find out.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: gateway image
+        run: docker build -t tollgate:ci .
+      - name: demo upstream image
+        run: docker build -f Dockerfile.upstream -t tollgate-upstream:ci .
