@@ -272,6 +272,7 @@ internal/middleware    the request pipeline
 internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher, config writers
 internal/admin         management API + console (only built when ADMIN_TOKEN is set)
 internal/auth          key format, hashing, verification, scopes, rotation
+internal/jwt           JWS verification, JWKS cache, claims, RFC 8705 binding
 internal/observability metrics registry, otel setup, slog
 migrations/            schema + NOTIFY triggers, parameterized seed
 deploy/helm/tollgate   chart: deployment, service, HPA (custom metric), PDB
@@ -285,6 +286,9 @@ loadtest/              k6: baseline, correctness, fairness
 
 - No WebSocket/Upgrade passthrough; no gRPC-specific handling.
 - Single Redis; a production deployment would use Redis Cluster (keys are already hash-tagged per tenant) or replicas with fail-open covering failover.
+- OIDC issuers are configured in the environment and not in Postgres, so adding one restarts the gateway. Deliberate: an issuer entry says which signing keys may mint a credential for which tenant, and in a table the admin API can write, that would be a privilege escalation rather than a configuration change. See [`docs/token-auth.md`](docs/token-auth.md).
+- The token path verifies asymmetric signatures only (RS/PS/ES). An identity provider signing with HS256 or EdDSA is not supported, and the first of those is on purpose.
+- A verified-token cache is on by default with a 30s TTL. A revoked *signing key* is honoured for at most `OIDC_JWKS_TTL` because a cache hit re-checks key liveness, but a stolen and still-unexpired token keeps working until it expires. Certificate binding is the answer to that, and it needs the issuer to implement RFC 8705.
 - API-key secrets use SHA-256, which is correct for 256-bit random secrets (there is nothing to brute-force) but would be wrong for human passwords - that trade-off is documented in `internal/auth`.
 - Rate limit check adds one Redis RTT to every admitted request. In the matched 12-pair rerun, the paired Redis-minus-memory p50 delta had a 0.0425..0.1190 ms IQR locally and a 0.0245..0.7025 ms IQR on AWS EKS. The intervals overlap. See [`bench/METHODOLOGY.md`](bench/METHODOLOGY.md) and the committed raw results.
 - kind's NodePort path is a single proxy hop; a real deployment would sit behind a proper LB.
