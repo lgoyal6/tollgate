@@ -27,6 +27,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/lgoyal6/tollgate/internal/auth"
+	"github.com/lgoyal6/tollgate/internal/jwt"
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/ratelimit"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
@@ -226,9 +227,15 @@ func Tracing(serviceName string) Middleware {
 	}
 }
 
-// Auth authenticates the API key, resolves the tenant, and enforces scopes
+// Auth authenticates the caller, resolves the tenant, and enforces scopes
 // later at routing time (the scope lives on the route).
-func Auth(snapshots func() *store.Snapshot, m *observability.Metrics) Middleware {
+//
+// Two credential types, told apart by shape rather than by trying both: a
+// tollgate key is tg_<id>_<secret> and a JWS is three dot-separated segments,
+// so the discriminator is unambiguous and neither path can be used as an
+// oracle for the other. A nil tokens argument turns the OIDC path off
+// entirely.
+func Auth(snapshots func() *store.Snapshot, m *observability.Metrics, tokens *TokenAuth) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info := reqctx.InfoFrom(r.Context())
@@ -245,21 +252,43 @@ func Auth(snapshots func() *store.Snapshot, m *observability.Metrics) Middleware
 				writeJSONError(w, info, http.StatusServiceUnavailable, "gateway warming up")
 				return
 			}
-			verdict, err := auth.Verify(snap, raw, time.Now())
-			if err != nil {
-				m.AuthFailures.WithLabelValues(authFailureReason(err)).Inc()
-				// One opaque message for every failure mode: never confirm
-				// whether a key id exists or is merely revoked.
-				writeJSONError(w, info, http.StatusUnauthorized, "invalid API key")
-				return
+
+			var (
+				tenant     *store.Tenant
+				key        *store.APIKey
+				deprecated bool
+				graceUntil *time.Time
+			)
+			if tokens != nil && jwt.LooksLikeJWT(raw) {
+				verified, err := tokens.verify(r.Context(), raw, bindingFor(r))
+				if err == nil {
+					tenant, key, err = tokenVerdict(snap, verified)
+				}
+				if err != nil {
+					m.AuthFailures.WithLabelValues(tokenFailureReason(err)).Inc()
+					writeJSONError(w, info, http.StatusUnauthorized, "invalid credential")
+					return
+				}
+			} else {
+				verdict, err := auth.Verify(snap, raw, time.Now())
+				if err != nil {
+					m.AuthFailures.WithLabelValues(authFailureReason(err)).Inc()
+					// One opaque message for every failure mode: never confirm
+					// whether a key id exists or is merely revoked.
+					writeJSONError(w, info, http.StatusUnauthorized, "invalid API key")
+					return
+				}
+				tenant, key = verdict.Tenant, verdict.Key
+				deprecated, graceUntil = verdict.Deprecated, verdict.Key.GraceUntil
 			}
-			info.TenantID = verdict.Tenant.ID
-			info.KeyID = verdict.Key.ID
-			if verdict.Deprecated {
+
+			info.TenantID = tenant.ID
+			info.KeyID = key.ID
+			if deprecated {
 				info.KeyDeprecated = true
 				w.Header().Set("X-Api-Key-Deprecated", "true")
-				if verdict.Key.GraceUntil != nil {
-					w.Header().Set("X-Api-Key-Grace-Until", verdict.Key.GraceUntil.UTC().Format(time.RFC3339))
+				if graceUntil != nil {
+					w.Header().Set("X-Api-Key-Grace-Until", graceUntil.UTC().Format(time.RFC3339))
 				}
 			}
 
@@ -267,8 +296,8 @@ func Auth(snapshots func() *store.Snapshot, m *observability.Metrics) Middleware
 			r.Header.Del("Authorization")
 			r.Header.Del("X-API-Key")
 
-			ctx := reqctx.WithTenant(r.Context(), verdict.Tenant)
-			ctx = reqctx.WithKey(ctx, verdict.Key)
+			ctx := reqctx.WithTenant(r.Context(), tenant)
+			ctx = reqctx.WithKey(ctx, key)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -17,11 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/lgoyal6/tollgate/internal/admin"
 	"github.com/lgoyal6/tollgate/internal/config"
+	"github.com/lgoyal6/tollgate/internal/jwt"
 	"github.com/lgoyal6/tollgate/internal/middleware"
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/proxy"
@@ -43,6 +45,9 @@ type Gateway struct {
 	// admin is nil unless ADMIN_TOKEN is set, in which case there is no
 	// management surface on either listener.
 	admin *admin.Server
+	// tokens is nil unless OIDC_ISSUERS is set, in which case the gateway
+	// accepts exactly one credential type, as it always did.
+	tokens *middleware.TokenAuth
 
 	ready atomic.Bool
 }
@@ -112,6 +117,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		metrics: observability.NewMetrics(),
 		store:   st,
 		watcher: store.NewWatcher(st, logger, cfg.ReloadPollInterval, cfg.ReloadDebounce),
+	}
+
+	if len(cfg.OIDCIssuers) > 0 {
+		tokens, err := buildTokenAuth(cfg, g.metrics, logger)
+		if err != nil {
+			st.Close()
+			return nil, err
+		}
+		g.tokens = tokens
 	}
 
 	var err error
@@ -190,7 +204,7 @@ func (g *Gateway) handler() http.Handler {
 		middleware.AccessLog(g.logger, g.cfg.AccessLogEnabled, g.cfg.AccessLogSample),
 		middleware.Metrics(g.metrics),
 		middleware.Tracing(g.cfg.ServiceName),
-		middleware.Auth(snapshots, g.metrics),
+		middleware.Auth(snapshots, g.metrics, g.tokens),
 		middleware.Router(snapshots),
 	}
 	// LimiterBackend "none" leaves g.limiter nil: the RateLimit middleware is
@@ -359,4 +373,105 @@ func (g *Gateway) mirrorReloadCounters(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// buildTokenAuth assembles the OIDC credential path from configuration.
+//
+// Nothing is fetched here. A gateway that blocked its own boot on an identity
+// provider being reachable would be a gateway that cannot start during the
+// provider's outage, which is exactly when it is most needed; the first token
+// that arrives pays for the first fetch instead.
+func buildTokenAuth(cfg config.Config, m *observability.Metrics, logger *slog.Logger) (*middleware.TokenAuth, error) {
+	issuers := make([]*jwt.Issuer, 0, len(cfg.OIDCIssuers))
+	for _, entry := range cfg.OIDCIssuers {
+		// MinRefresh is left at the package default. It is the rate limit on
+		// unknown-kid fetches, a property of not wanting to be a request
+		// amplifier rather than a deployment preference, so it is not a knob.
+		source, err := jwt.NewKeySource(entry.JWKSURL, nil, cfg.OIDCJWKSTTL, 0)
+		if err != nil {
+			return nil, fmt.Errorf("issuer %s: %w", entry.Issuer, err)
+		}
+		issuers = append(issuers, &jwt.Issuer{
+			Name:     entry.Issuer,
+			Audience: entry.Audience,
+			TenantID: entry.TenantID,
+			Keys:     source,
+		})
+	}
+	verifier, err := jwt.NewVerifier(issuers)
+	if err != nil {
+		return nil, err
+	}
+
+	tokens := &middleware.TokenAuth{Verifier: verifier}
+	if cfg.OIDCTokenCacheTTL > 0 {
+		tokens.Cache = jwt.NewVerifiedCache(cfg.OIDCTokenCacheTTL, 0)
+	}
+	registerTokenMetrics(m, tokens, issuers)
+
+	logger.Info("oidc token authentication enabled",
+		"issuers", len(issuers),
+		"jwks_ttl", cfg.OIDCJWKSTTL,
+		"token_cache_ttl", cfg.OIDCTokenCacheTTL)
+	return tokens, nil
+}
+
+// registerTokenMetrics exports the key source and cache counters by reading
+// them, rather than by having those packages depend on Prometheus.
+//
+// The two worth alerting on are tollgate_oidc_keys_stale, which is the window
+// where a key revoked at the provider is still trusted here, and
+// tollgate_oidc_key_fetches_blocked_total, which is what a kid-guessing flood
+// looks like from inside the gateway.
+func registerTokenMetrics(m *observability.Metrics, tokens *middleware.TokenAuth, issuers []*jwt.Issuer) {
+	for _, iss := range issuers {
+		labels := prometheus.Labels{"issuer": iss.Name}
+		source := iss.Keys
+		m.Registry.MustRegister(
+			prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+				Name: "tollgate_oidc_keys", Help: "Signing keys currently installed for this issuer.",
+				ConstLabels: labels,
+			}, func() float64 { return float64(source.Stats().Keys) }),
+			prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+				Name: "tollgate_oidc_keys_stale", Help: "1 while serving a key set whose last refresh failed.",
+				ConstLabels: labels,
+			}, func() float64 {
+				if source.Stats().ServingStale {
+					return 1
+				}
+				return 0
+			}),
+			prometheus.NewCounterFunc(prometheus.CounterOpts{
+				Name: "tollgate_oidc_key_fetches_total", Help: "Successful JWKS fetches.",
+				ConstLabels: labels,
+			}, func() float64 { return float64(source.Stats().Fetches) }),
+			prometheus.NewCounterFunc(prometheus.CounterOpts{
+				Name: "tollgate_oidc_key_fetch_failures_total", Help: "Failed JWKS fetches.",
+				ConstLabels: labels,
+			}, func() float64 { return float64(source.Stats().Failures) }),
+			prometheus.NewCounterFunc(prometheus.CounterOpts{
+				Name: "tollgate_oidc_key_fetches_blocked_total", Help: "Unknown-kid lookups refused by the fetch rate limit.",
+				ConstLabels: labels,
+			}, func() float64 { return float64(source.Stats().BlockedMisses) }),
+		)
+	}
+	if tokens.Cache == nil {
+		return
+	}
+	cache := tokens.Cache
+	m.Registry.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "tollgate_oidc_token_cache_entries", Help: "Verified tokens currently cached.",
+		}, func() float64 { return float64(cache.Stats().Size) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "tollgate_oidc_token_cache_hits_total", Help: "Verifications served from the cache.",
+		}, func() float64 { return float64(cache.Stats().Hits) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "tollgate_oidc_token_cache_misses_total", Help: "Verifications that did the full check.",
+		}, func() float64 { return float64(cache.Stats().Misses) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "tollgate_oidc_token_cache_revocations_total",
+			Help: "Cached tokens dropped because their signing key left the key set.",
+		}, func() float64 { return float64(cache.Stats().Revocations) }),
+	)
 }
