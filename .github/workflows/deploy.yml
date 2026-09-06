@@ -45,6 +45,30 @@ jobs:
             exit 1
           }
 
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Compare the OIDC token this job is holding against the trust policy in
+      # deploy/terraform/aws/main.tf before spending a round trip on STS. A
+      # mismatch otherwise arrives as "Not authorized to perform
+      # sts:AssumeRoleWithWebIdentity", which names neither the claim that did
+      # not match nor the pattern it was compared against.
+      #
+      # -environment is empty because this job does not run in a GitHub
+      # Environment. Pinning the deployment to one means creating a
+      # `production` environment on the repository and adding
+      # `environment: production` to this job; the check is ready for it.
+      - name: Verify the deployment identity is in policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run ./cmd/tollgate-oidc-preflight \
+            -audience sts.amazonaws.com \
+            -environment "" \
+            -workflow .github/workflows/deploy.yml
+
       - name: Authenticate to AWS with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
