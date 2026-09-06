@@ -33,6 +33,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // State of one charge. See migrations/003_budget_ledger.sql for why "uncertain"
@@ -84,9 +89,25 @@ type Status struct {
 // lock two concurrent requests both read the same headroom and both admit - the
 // classic oversubscription race, and the one the concurrency test pins.
 func (l *Ledger) Reserve(ctx context.Context, tenantID, requestID string, upperBoundMicros int64, model string) (Status, error) {
+	// The database is on the request path here, inside a transaction that takes a
+	// row lock (FOR UPDATE) per tenant. That lock is the one place a busy tenant
+	// serialises against itself, so this is where a request waits and where it has
+	// to be visible. The refusals are recorded as outcomes, not errors: an over-budget
+	// tenant is the ledger working, and marking it ERROR would make a correct
+	// gateway look broken in the viewer.
+	ctx, span := tracer.Start(ctx, "budget.reserve",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "reserve"),
+		))
+	defer span.End()
+
 	if upperBoundMicros < 0 {
 		return Status{}, fmt.Errorf("budget: negative reservation %d", upperBoundMicros)
 	}
+	var reserveErr error
+	defer func() { spanOutcome(span, reserveErr) }()
 	var st Status
 	err := pgx.BeginFunc(ctx, l.pool, func(tx pgx.Tx) error {
 		// Idempotency first: if this request already holds (or spent) money, report
@@ -138,6 +159,7 @@ func (l *Ledger) Reserve(ctx context.Context, tenantID, requestID string, upperB
 		st = mkStatus(tenantID, limit, reserved+upperBoundMicros, settled)
 		return nil
 	})
+	reserveErr = err
 	return st, err
 }
 
@@ -148,9 +170,22 @@ func (l *Ledger) Reserve(ctx context.Context, tenantID, requestID string, upperB
 // estimate - and the ledger records the truth rather than clamping to the reservation.
 // Clamping would make the books balance while the invoice did not.
 func (l *Ledger) Settle(ctx context.Context, tenantID, requestID string, actualMicros int64) (Status, error) {
+	// The other half of the money path, and the one that runs after the upstream has
+	// answered: a slow settle is latency the caller pays for after the useful work is
+	// already done, which is invisible without a span of its own.
+	ctx, span := tracer.Start(ctx, "budget.settle",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "settle"),
+		))
+	defer span.End()
+
 	if actualMicros < 0 {
 		return Status{}, fmt.Errorf("budget: negative settlement %d", actualMicros)
 	}
+	var settleErr error
+	defer func() { spanOutcome(span, settleErr) }()
 	var st Status
 	err := pgx.BeginFunc(ctx, l.pool, func(tx pgx.Tx) error {
 		var state State
@@ -198,6 +233,7 @@ func (l *Ledger) Settle(ctx context.Context, tenantID, requestID string, actualM
 		st = s
 		return nil
 	})
+	settleErr = err
 	return st, err
 }
 
@@ -239,6 +275,18 @@ func (l *Ledger) Release(ctx context.Context, tenantID, requestID, reason string
 // know what the provider will bill, so the money stays committed until an operator
 // or a provider reconciliation resolves it.
 func (l *Ledger) MarkUncertain(ctx context.Context, tenantID, requestID, reason string) error {
+	// Spanned for the same reason as reserve and settle: it is a write against the
+	// same per-tenant row, it runs after the response, and it is the branch a real
+	// upstream that reports no usage takes every single time. `reason` is not an
+	// attribute - it is a sentence assembled from what a dependency said back.
+	ctx, span := tracer.Start(ctx, "budget.mark_uncertain",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "mark_uncertain"),
+		))
+	defer span.End()
+
 	ct, err := l.pool.Exec(ctx,
 		`UPDATE spend_entries SET state='uncertain', note=$3, updated_at=now()
 		  WHERE tenant_id=$1 AND request_id=$2 AND state='reserved'`,
@@ -392,4 +440,29 @@ func nullIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// One tracer per package, resolved through the global provider so it is a no-op
+// until internal/observability installs one.
+var tracer = otel.Tracer("tollgate/budget")
+
+// spanOutcome records how a ledger call ended.
+//
+// A refusal is an outcome, not an error: ErrOverBudget and ErrNoBudget are the
+// ledger doing its job, and recording them as span errors would light up a viewer
+// for every tenant that hit its limit. Only a real failure sets the error status,
+// and its message never becomes an attribute - a pgx error carries the DSN, and the
+// DSN carries the password.
+func spanOutcome(span oteltrace.Span, err error) {
+	switch {
+	case err == nil:
+		span.SetAttributes(attribute.String("budget.outcome", "ok"))
+	case errors.Is(err, ErrOverBudget):
+		span.SetAttributes(attribute.String("budget.outcome", "over_budget"))
+	case errors.Is(err, ErrNoBudget):
+		span.SetAttributes(attribute.String("budget.outcome", "no_budget"))
+	default:
+		span.SetAttributes(attribute.String("budget.outcome", "failed"))
+		span.SetStatus(codes.Error, "ledger call failed")
+	}
 }
