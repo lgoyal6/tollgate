@@ -29,6 +29,76 @@ jobs:
       - run: go build ./...
       - run: go test ./...
 
+  # The spend ledger's guarantees ARE PostgreSQL's - FOR UPDATE row locking,
+  # transaction atomicity, a unique index for idempotency. A fake would only test
+  # the fake, so these tests skip unless pointed at a real database, and this job
+  # is what points them at one. Without it they would silently never run.
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tollgate
+          POSTGRES_PASSWORD: tollgate
+          POSTGRES_DB: tollgate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tollgate"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # -count=1 defeats the test cache: a green cached result against a database
+      # that was never reached is exactly the failure this job exists to catch.
+      - run: go test ./internal/budget/ -v -count=1 -race
+        env:
+          TOLLGATE_TEST_DATABASE_URL: postgres://tollgate:tollgate@localhost:5432/tollgate?sslmode=disable
+      # The management API's integration tests gate on their own variable, and
+      # nothing set it, so the whole key lifecycle suite - revoke, rotate,
+      # grace expiry, the OpenAPI conformance run - was skipping in CI while
+      # reporting green. Same database, same job: what they need a real
+      # PostgreSQL for is the same LISTEN/NOTIFY and constraint behaviour the
+      # ledger needs, and a fake would only test the fake.
+      - run: go test ./internal/admin/ -v -count=1 -race
+        env:
+          TOLLGATE_TEST_POSTGRES: postgres://tollgate:tollgate@localhost:5432/tollgate?sslmode=disable
+
+  # A NetworkPolicy whose selector matches nothing is not a weaker policy, it is
+  # no policy, and Kubernetes accepts it without complaint. The chart shipped
+  # exactly that defect once (it selected `app: <release>`, a label these pods
+  # have never carried), so the render is now checked against the Deployment's
+  # own pod labels rather than eyeballed.
+  netpol-selector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: the policy must select the gateway pods and nothing else
+        run: |
+          python3 -m pip install --quiet pyyaml
+          helm template tg deploy/helm/tollgate --set networkPolicy.enabled=true > /tmp/render.yaml
+          python3 - <<'EOF'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open('/tmp/render.yaml')) if d]
+          sel, deploys = None, {}
+          for d in docs:
+              if d.get('kind') == 'Deployment':
+                  deploys[d['metadata']['name']] = d['spec']['template']['metadata']['labels']
+              if d.get('kind') == 'NetworkPolicy':
+                  sel = d['spec']['podSelector']['matchLabels']
+          if not sel:
+              sys.exit('no NetworkPolicy rendered')
+          matched = [n for n, l in deploys.items()
+                     if all(l.get(k) == v for k, v in sel.items())]
+          print('selector', sel, 'matches', matched)
+          if matched != ['tg']:
+              sys.exit(f'selector must match exactly the gateway pods, matched {matched}')
+          EOF
+
   # Its own job rather than a flag on the one above. The gateway's whole
   # premise is concurrent: a shared limiter, a hot-reloaded config snapshot
   # read by every request, a JWKS cache with an in-flight fetch collapsed
@@ -92,3 +162,10 @@ jobs:
         run: docker build -t tollgate:ci .
       - name: demo upstream image
         run: docker build -f Dockerfile.upstream -t tollgate-upstream:ci .
+      - name: the build context carries no credential and no .git
+        # Reads the layers rather than the .dockerignore. The build stage does a
+        # bare `COPY . .`, so a developer's .env or TLS key beside the source
+        # ends up in a cached, exportable layer, and deleting a line from
+        # .dockerignore is otherwise a silent change. The script plants
+        # credential-shaped fixtures, never a real credential.
+        run: scripts/check-build-context.sh
