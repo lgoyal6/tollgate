@@ -67,6 +67,20 @@ jobs:
       - run: go test ./internal/admin/ -v -count=1 -race
         env:
           TOLLGATE_TEST_POSTGRES: postgres://tollgate:tollgate@localhost:5432/tollgate?sslmode=disable
+      # The outbox's claim is that a usage window and the message reporting it
+      # commit together, and that a redelivery lands in an inbox row that is
+      # already there. Both are claims about two SEPARATE databases, so the
+      # suite needs a second one and skips itself without it - which meant it
+      # ran nowhere. This creates the consumer database in the same service
+      # container and points the suite at both.
+      - name: consumer database for the outbox suite
+        run: |
+          PGPASSWORD=tollgate psql -h localhost -U tollgate -d tollgate \
+            -v ON_ERROR_STOP=1 -c 'CREATE DATABASE billing'
+      - run: go test ./internal/outbox/ -v -count=1 -race
+        env:
+          TOLLGATE_TEST_POSTGRES: postgres://tollgate:tollgate@localhost:5432/tollgate?sslmode=disable
+          TOLLGATE_TEST_BILLING: postgres://tollgate:tollgate@localhost:5432/billing?sslmode=disable
 
   # A NetworkPolicy whose selector matches nothing is not a weaker policy, it is
   # no policy, and Kubernetes accepts it without complaint. The chart shipped
