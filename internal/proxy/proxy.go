@@ -82,6 +82,26 @@ func New(opts Options) *Proxy {
 // errBreakerOpen distinguishes "we refused to try" from transport failures.
 var errBreakerOpen = errors.New("proxy: circuit breaker open")
 
+// errCredentialMissing means a route is configured to inject the gateway's own
+// credential and the environment does not have it. Retrying cannot fix that,
+// and it is counted once rather than once per attempt.
+var errCredentialMissing = errors.New("proxy: upstream credential is not set")
+
+// credentialFailure records that the credential the gateway holds on
+// everyone's behalf did not work. reason is "missing" or "rejected".
+//
+// This exists because the alternative is silence: an upstream that refuses the
+// shared key answers 401, the gateway relays it, and the only trace is a 4xx
+// in the same counter every tenant's own bad request lands in. The value is
+// never logged, only the fact and the route.
+func (p *Proxy) credentialFailure(route *store.Route, info *reqctx.Info, reason string, status int) {
+	p.metrics.UpstreamCredentialFailures.WithLabelValues(route.Upstream.Host, reason).Inc()
+	p.logger.Warn("the gateway's own upstream credential did not work",
+		"request_id", info.RequestID, "upstream", route.Upstream.Host,
+		"route", route.ID, "reason", reason, "upstream_status", status,
+		"credential_env", route.UpstreamAuthEnv)
+}
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	info := reqctx.InfoFrom(r.Context())
 	route := reqctx.RouteFrom(r.Context())
@@ -106,11 +126,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		status, msg := classifyError(err)
+		if errors.Is(err, errCredentialMissing) {
+			p.credentialFailure(route, info, "missing", status)
+		}
 		p.fail(w, info, status, msg, err)
 		return
 	}
 	defer release()
 	defer resp.Body.Close()
+
+	// An upstream that refuses a request carrying the gateway's own credential
+	// is the observable symptom of that credential having been revoked or
+	// expired. The response is still relayed unchanged - the gateway is a
+	// proxy, and the upstream may equally be refusing the caller - but it stops
+	// being invisible.
+	if route.InjectsCredential() &&
+		(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		p.credentialFailure(route, info, "rejected", resp.StatusCode)
+	}
 
 	info.Status = resp.StatusCode
 	copyHeaders(w.Header(), resp.Header)
@@ -153,8 +186,9 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 		if err != nil {
 			cancel()
 			lastErr = err
-			if errors.Is(err, errBreakerOpen) || !canRepeat {
-				// Breaker open: more attempts would hit the same wall.
+			if errors.Is(err, errBreakerOpen) || errors.Is(err, errCredentialMissing) || !canRepeat {
+				// Breaker open, or a credential that is not in the
+				// environment: more attempts would hit the same wall.
 				return nil, nil, err
 			}
 			continue
@@ -219,7 +253,7 @@ func (p *Proxy) attempt(ctx context.Context, r *http.Request, route *store.Route
 		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
 		oteltrace.WithAttributes(
 			attribute.String("http.method", out.Method),
-			attribute.String("http.url", out.URL.String()),
+			attribute.String("http.url", redactedURL(out.URL)),
 			attribute.String("tollgate.upstream", route.Upstream.Host),
 			attribute.Int("tollgate.attempt", attempt),
 		),
@@ -280,7 +314,7 @@ func (p *Proxy) outboundRequest(ctx context.Context, r *http.Request, route *sto
 	if route.InjectsCredential() {
 		secret := os.Getenv(route.UpstreamAuthEnv)
 		if secret == "" {
-			return nil, fmt.Errorf("route %d: upstream credential env %s is not set", route.ID, route.UpstreamAuthEnv)
+			return nil, fmt.Errorf("route %d: %w", route.ID, errCredentialMissing)
 		}
 		out.Header.Set(route.UpstreamAuthHeader, route.UpstreamAuthPrefix+secret)
 	}
@@ -302,6 +336,29 @@ func (p *Proxy) outboundRequest(ctx context.Context, r *http.Request, route *sto
 	out.Header.Set("X-Request-Id", info.RequestID)
 	out.Header.Set("X-Tollgate-Tenant", info.TenantID)
 	return out, nil
+}
+
+// redactedURL renders an upstream URL for a span attribute with the two
+// credential-bearing parts of a URL removed: userinfo, which is how an
+// operator points a route at a basic-auth upstream, and query parameter
+// values, which is how several providers take their API key.
+//
+// A trace backend is a different trust domain from the gateway's environment,
+// and a span attribute is the one place a secret escapes without anyone
+// noticing, because nothing about a trace looks like a credential store.
+// Parameter names survive: knowing which were sent is most of what makes the
+// attribute worth exporting, and the name is not the secret.
+func redactedURL(u *url.URL) string {
+	safe := *u
+	safe.User = nil
+	if safe.RawQuery != "" {
+		q := safe.Query()
+		for k := range q {
+			q[k] = []string{"REDACTED"}
+		}
+		safe.RawQuery = q.Encode()
+	}
+	return safe.String()
 }
 
 // targetURL joins the upstream base with the (optionally stripped) path.

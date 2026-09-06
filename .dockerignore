@@ -9,3 +9,13 @@ bench/.tmp
 bench/results
 coverage.out
 *.log
+
+# Credential material a developer may have beside the source. The build stage
+# does a bare `COPY . .`, and this gateway's whole job is holding a provider
+# key, so the one file most likely to be sitting in a working tree is the one
+# that must never reach a build layer.
+.env
+.env.*
+*.pem
+*.key
+.agent-work

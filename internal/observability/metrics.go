@@ -34,6 +34,17 @@ type Metrics struct {
 
 	AuthFailures *prometheus.CounterVec // reason
 
+	// UpstreamCredentialFailures counts the times the credential the gateway
+	// holds on everyone's behalf did not work: it was not set, or the upstream
+	// refused a request carrying it. Without this a revoked shared provider
+	// key is invisible - every affected request is relayed as the upstream's
+	// own 401, which lands in tollgate_requests_total{code="4xx"} beside every
+	// tenant's own bad request and looks like nothing happened.
+	//
+	// Both labels are bounded: upstream comes from the routes table, and
+	// reason is "missing" or "rejected".
+	UpstreamCredentialFailures *prometheus.CounterVec // upstream, reason
+
 	ConfigReloads        prometheus.Counter
 	ConfigReloadFailures prometheus.Counter
 }
@@ -98,6 +109,10 @@ func NewMetrics() *Metrics {
 			Name: "tollgate_circuit_breaker_transitions_total",
 			Help: "Breaker state transitions per upstream.",
 		}, []string{"upstream", "to"}),
+		UpstreamCredentialFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tollgate_upstream_credential_failures_total",
+			Help: "Times the gateway's own upstream credential was missing or refused.",
+		}, []string{"upstream", "reason"}),
 		AuthFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "tollgate_auth_failures_total",
 			Help: "Rejected credentials by reason.",
@@ -118,6 +133,7 @@ func NewMetrics() *Metrics {
 		m.UpstreamDuration, m.Retries, m.Hedges, m.HedgeWins,
 		m.BreakerState, m.BreakerTransitions,
 		m.AuthFailures,
+		m.UpstreamCredentialFailures,
 		m.ConfigReloads, m.ConfigReloadFailures,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
