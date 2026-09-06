@@ -1,0 +1,19 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+!.terraform.lock.hcl
+
+# Throwaway keypair for the probe issuer. probe-issuer.mjs regenerates it on
+# first run; a private key does not belong in the tree even a disposable one.
+probe_key.pem
+rogue_key.pem
+probe_jwks.json
