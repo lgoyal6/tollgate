@@ -1,0 +1,70 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny egress for the gateway, with an explicit allowlist.
+#
+# The gateway holds the team's real provider credential, so the blast radius of a
+# compromise is "what else can this pod reach". Without a policy the answer is the
+# whole cluster plus the whole internet. With one it is: DNS, its own Postgres and
+# Redis, and public upstreams - and specifically NOT the private ranges where the
+# rest of the cluster lives.
+#
+# NOTE: a NetworkPolicy object is not enforcement. The cluster's CNI has to
+# implement it (Calico, Cilium, Weave). kind's default kindnet accepts these
+# objects and silently ignores them, which is why this is off by default and why
+# the chart's own test asserts against a Calico-backed cluster rather than
+# against the presence of this file.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  # These must be the labels the Deployment's pod template actually sets. They
+  # are not: a selector that matches nothing is not a weaker policy, it is no
+  # policy, and it fails silently because Kubernetes accepts an empty match
+  # without complaint. An earlier version of this file selected
+  # `app: {{ "{{" }} .Release.Name {{ "}}" }}`, which no pod here has ever carried.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tollgate
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Egress"]
+  egress:
+    # DNS. Omitting this is the classic mistake: every other rule below is
+    # written against a hostname that can no longer be resolved, so the pod
+    # fails in a way that looks like the upstream is down.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Postgres and Redis, in this namespace only.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports: [{protocol: TCP, port: 6379}]
+    # Public upstreams, with the cluster's own private ranges carved out.
+    - to:
+        - ipBlock:
+            cidr: {{ index .Values.networkPolicy.upstreamCIDRs 0 | quote }}
+            except:
+              {{- range .Values.networkPolicy.excludePrivateCIDRs }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+{{- end }}
