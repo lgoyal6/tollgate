@@ -104,7 +104,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for migration in migrations/001_init.sql migrations/002_upstream_auth.sql; do
+          # Every numbered migration, in order, rather than a hand-written list.
+          # The list drifted: 003_budget_ledger.sql shipped and this step still
+          # named only 001 and 002, so a fresh cluster came up without the spend
+          # ledger. The gateway's own Migrate() globs the same set on boot, which
+          # is what hid it. Matching that glob here means the next migration
+          # cannot be forgotten in the same way.
+          for migration in $(ls migrations/[0-9]*.sql | sort); do
             kubectl exec -i statefulset/postgres \
               -n "${KUBE_NAMESPACE}" \
               -- psql -v ON_ERROR_STOP=1 -U tollgate -d tollgate < "${migration}"
