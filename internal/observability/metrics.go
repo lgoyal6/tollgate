@@ -125,6 +125,28 @@ func NewMetrics() *Metrics {
 	return m
 }
 
+// knownMethods is every method the `method` label may carry. RFC 9110's
+// registered set plus PATCH; anything else is a caller-invented token.
+var knownMethods = map[string]bool{
+	"GET": true, "HEAD": true, "POST": true, "PUT": true, "PATCH": true,
+	"DELETE": true, "CONNECT": true, "OPTIONS": true, "TRACE": true,
+}
+
+// MethodLabel clamps a request method for the `method` label.
+//
+// A method is an arbitrary token in RFC 9110, and net/http hands the handler
+// whatever token arrived, so the raw value is caller-controlled: without this
+// clamp anyone - including a caller with no credential, because the Metrics
+// middleware sits outside Auth - mints one permanent time series per invented
+// method, in this process and in every scraper downstream. Unrecognised
+// methods all land on "other", which is still enough to see them happening.
+func MethodLabel(method string) string {
+	if knownMethods[method] {
+		return method
+	}
+	return "other"
+}
+
 // CodeClass buckets a status code for the `code` label ("2xx", "4xx", ...).
 func CodeClass(status int) string {
 	switch {
