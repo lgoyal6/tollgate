@@ -103,6 +103,7 @@ var allowed = map[string]string{
 	"6041d37895fb9242ef70164ce70532cd1d4c0313208c289aab83643c26904b2e": "deploy/terraform/gcp/run.tf, the Secret Manager secret's name and not its value",
 	"64b7cd758c91aa9e75fdc95b2dd85c5bcd29efe0eae2e4b4c9db8f827d5649b0": "deploy/terraform/gcp/outputs.tf, a DSN built from a random_password reference",
 	"32ce32ebc04a3762f135b61a75b8a470169370185bbc54a8778f60f861c769be": "deploy/terraform/gcp/secrets.tf, the same reference in the per-environment DSN",
+	"7c2f78765c03e72d657c3f1d7aeb1abd07ceb4f483cfaffe1ce6bffa05deac8b": "internal/ratelimit/span_test.go, the Redis password a span attribute must not carry",
 }
 
 // TestNoCredentialShapeInTheWorkingTree scans every tracked file.

@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/lgoyal6/tollgate/internal/store"
 )
@@ -44,17 +48,42 @@ func NewRedisLimiter(client redis.UniversalClient) *RedisLimiter {
 func (l *RedisLimiter) Name() string { return "redis" }
 
 func (l *RedisLimiter) Allow(ctx context.Context, tenantID string, p Policy, uniq string) (Decision, error) {
+	// Spanned because it is a network round trip every admitted request waits on,
+	// and the metric next to it (RateLimiterDuration) is a histogram over all
+	// tenants: it can say the limiter got slower, never which request paid for it.
+	// The tenant id is deliberately NOT an attribute here - it is already a label
+	// on the decision counter, and PolicyForTenant is the only thing that varies.
+	ctx, span := tracer.Start(ctx, "ratelimit.allow",
+		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
+		oteltrace.WithAttributes(
+			attribute.String("db.system", "redis"),
+			attribute.String("ratelimit.algorithm", string(p.Algorithm)),
+		))
+	defer span.End()
+
 	if err := p.Validate(); err != nil {
 		return Decision{}, fmt.Errorf("invalid policy for tenant %s: %w", tenantID, err)
 	}
+	var (
+		decision Decision
+		err      error
+	)
 	switch p.Algorithm {
 	case store.AlgoTokenBucket:
-		return l.allowTokenBucket(ctx, tenantID, p)
+		decision, err = l.allowTokenBucket(ctx, tenantID, p)
 	case store.AlgoSlidingWindow:
-		return l.allowSlidingWindow(ctx, tenantID, p, uniq)
+		decision, err = l.allowSlidingWindow(ctx, tenantID, p, uniq)
 	default:
-		return Decision{}, fmt.Errorf("unknown algorithm %q", p.Algorithm)
+		err = fmt.Errorf("unknown algorithm %q", p.Algorithm)
 	}
+	if err != nil {
+		// The message is not an attribute: a Redis error carries the DSN, and the
+		// DSN carries the password. The type of failure is what a reader needs.
+		span.SetStatus(codes.Error, "limiter unavailable")
+		return Decision{}, err
+	}
+	span.SetAttributes(attribute.Bool("ratelimit.allowed", decision.Allowed))
+	return decision, nil
 }
 
 func (l *RedisLimiter) allowTokenBucket(ctx context.Context, tenantID string, p Policy) (Decision, error) {
@@ -135,3 +164,7 @@ func parseScriptReply(res any) (allowed bool, remaining int64, retryAfter time.D
 	}
 	return a == 1, remaining, time.Duration(ra) * time.Millisecond, nil
 }
+
+// One tracer per package, resolved through the global provider so it is a no-op
+// until internal/observability installs one.
+var tracer = otel.Tracer("tollgate/ratelimit")
