@@ -10,3 +10,10 @@ deploy/terraform/terraform.tfstate*
 
 # graphify knowledge graph (local index, not source)
 graphify-out/
+
+# Same reasoning as .dockerignore: the provider credential belongs in the
+# process environment, never in a file next to the code.
+.env
+.env.*
+*.pem
+*.key

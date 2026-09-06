@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -24,7 +25,7 @@ type Store struct {
 func New(ctx context.Context, databaseURL string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parsing DATABASE_URL: %w", err)
+		return nil, fmt.Errorf("parsing DATABASE_URL: %w", withoutPassword(err, databaseURL))
 	}
 	cfg.MaxConns = 8
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -39,6 +40,85 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 }
 
 func (s *Store) Close() { s.Pool.Close() }
+
+// withoutPassword strips the database password out of a connection-string
+// error before it is returned, logged and shipped off the machine.
+//
+// pgx quotes the whole string back in its parse errors and redacts the
+// password itself in two of the three forms it accepts - user:pass@ and the
+// password= keyword - but not the third. A DATABASE_URL of the form
+// postgres://user@host/db?password=... is echoed complete, and a parse error
+// is exactly the moment a boot log gets pasted into a chat window.
+//
+// A password shorter than four characters is not substituted, because
+// replacing every "p" in a sentence would mangle it; in that case the string
+// is dropped instead.
+func withoutPassword(err error, dsn string) error {
+	const redacted = "xxxxx"
+	msg := err.Error()
+	passwords := passwordsIn(dsn)
+	for _, pw := range passwords {
+		if len(pw) >= 4 {
+			msg = strings.ReplaceAll(msg, pw, redacted)
+		}
+	}
+	for _, pw := range passwords {
+		if pw != "" && strings.Contains(msg, pw) {
+			return errors.New(unquotable)
+		}
+	}
+	// pgx quotes the string back verbatim. That is only safe once it is known
+	// to be one of the two forms a password can be found in; a string that is
+	// neither is malformed, and a malformed string is where a password ends up
+	// somewhere nothing knows to look.
+	if strings.Contains(msg, dsn) && !isAKnownConnectionStringForm(dsn) {
+		return errors.New(unquotable)
+	}
+	return errors.New(msg)
+}
+
+const unquotable = "the connection string could not be parsed, and is not repeated here: " +
+	"it is not in a form this gateway can find a password in to redact"
+
+// isAKnownConnectionStringForm reports whether dsn is a postgres URL or a
+// keyword/value string, the two shapes passwordsIn knows how to read.
+func isAKnownConnectionStringForm(dsn string) bool {
+	if u, err := url.Parse(dsn); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		return true
+	}
+	fields := strings.Fields(dsn)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, field := range fields {
+		if !strings.Contains(field, "=") {
+			return false
+		}
+	}
+	return true
+}
+
+// passwordsIn finds the password in every form a Postgres connection string
+// can carry one.
+func passwordsIn(dsn string) []string {
+	var out []string
+	if u, err := url.Parse(dsn); err == nil {
+		if u.User != nil {
+			if pw, ok := u.User.Password(); ok {
+				out = append(out, pw)
+			}
+		}
+		if pw := u.Query().Get("password"); pw != "" {
+			out = append(out, pw)
+		}
+	}
+	for _, field := range strings.Fields(dsn) {
+		if pw, ok := strings.CutPrefix(field, "password="); ok {
+			out = append(out, pw)
+		}
+	}
+	return out
+}
 
 // Snapshot is an immutable view of the routing/auth/rate-limit config.
 // The gateway swaps whole snapshots atomically; request handlers never
