@@ -234,13 +234,36 @@ data "http" "github_repository" {
 
 locals {
   github_repository_metadata = jsondecode(data.http.github_repository.response_body)
-  github_oidc_subject_prefix = format(
-    "repo:%s@%s/%s@%s",
-    local.github_repository_metadata.owner.login,
-    local.github_repository_metadata.owner.id,
-    local.github_repository_metadata.name,
-    local.github_repository_metadata.id,
-  )
+
+  # GitHub mints one of two subject formats, and which one arrives is a
+  # repository setting this stack cannot read or set:
+  #
+  #   default    repo:OWNER/REPO:ref:refs/tags/v1.2.3
+  #   immutable  repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:refs/tags/v1.2.3
+  #
+  # The immutable format is only emitted when the repository has
+  # use_immutable_subject set, which is off by default. Pinning the policy to
+  # the immutable format alone made every deploy fail the role assumption,
+  # because the token carried the default format and StringLike is anchored.
+  #
+  # Both patterns are accepted. Neither widens the grant: each one names this
+  # one repository and only refs/tags/v*, so a different repository, a branch,
+  # or a non-version tag still fails. The numeric IDs are what make the second
+  # form rename-proof, which is why it is kept rather than dropped.
+  github_oidc_subjects = [
+    format(
+      "repo:%s/%s:ref:refs/tags/v*",
+      local.github_repository_metadata.owner.login,
+      local.github_repository_metadata.name,
+    ),
+    format(
+      "repo:%s@%s/%s@%s:ref:refs/tags/v*",
+      local.github_repository_metadata.owner.login,
+      local.github_repository_metadata.owner.id,
+      local.github_repository_metadata.name,
+      local.github_repository_metadata.id,
+    ),
+  ]
 }
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
@@ -265,7 +288,7 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "${local.github_oidc_subject_prefix}:ref:refs/tags/v*"
+          "token.actions.githubusercontent.com:sub" = local.github_oidc_subjects
         }
       }
     }]

@@ -30,8 +30,24 @@ terraform -chdir=deploy/terraform apply \
 Store the `github_actions_role_arn` Terraform output as the repository secret
 `AWS_ROLE_ARN`. It is an IAM role identifier, not a credential. Do not commit the
 output, an AWS account ID, access keys, Terraform state, or kubeconfig content.
-The role trust policy reads GitHub's public repository metadata at apply time to
-match GitHub's immutable OIDC owner and repository IDs without committing them.
+
+## The deployment identity
+
+The role trust policy reads GitHub's public repository metadata at apply time
+and accepts two subject patterns, both pinned to this repository and to
+`refs/tags/v*`:
+
+    repo:OWNER/REPO:ref:refs/tags/v*
+    repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:refs/tags/v*
+
+Two, because GitHub emits the second form only for repositories that have opted
+into immutable subject identifiers, and that is a repository setting rather than
+something this stack can read or set. `internal/deployid` holds the same
+patterns and a test that fails if the two definitions drift apart.
+
+`cmd/tollgate-oidc-preflight` runs in the deploy workflow before the role
+assumption and compares the token in hand against that policy, so a mismatch
+arrives as the claim that did not match rather than as an opaque STS error.
 
 ## Teardown
 
