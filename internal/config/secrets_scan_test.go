@@ -97,6 +97,12 @@ var allowed = map[string]string{
 	"b30f5c57b42d63579f1db23d45f99cdfaedacfb7a21c74c8452e5b8e8d64aaea": "internal/proxy/secret_test.go, the shared provider key the proxy must never echo",
 	"06c05df6c4e9c2ed5917e8330e63e0b35583326f823d15cf52b825e5c2899978": "internal/proxy/secret_test.go, the same sentinel unquoted",
 	"7c1c2c4baea8218f484705fdeadde41365a29c69e8a9ba505f61a3a9d1fc72d1": "internal/store/dsn_test.go, the DSN password withoutPassword has to redact",
+	// deploy/terraform/gcp: three interpolations, not values. Every password in
+	// that module is a random_password resource written straight into Secret
+	// Manager, so what is in the file is the expression that reads it back.
+	"6041d37895fb9242ef70164ce70532cd1d4c0313208c289aab83643c26904b2e": "deploy/terraform/gcp/run.tf, the Secret Manager secret's name and not its value",
+	"64b7cd758c91aa9e75fdc95b2dd85c5bcd29efe0eae2e4b4c9db8f827d5649b0": "deploy/terraform/gcp/outputs.tf, a DSN built from a random_password reference",
+	"32ce32ebc04a3762f135b61a75b8a470169370185bbc54a8778f60f861c769be": "deploy/terraform/gcp/secrets.tf, the same reference in the per-environment DSN",
 }
 
 // TestNoCredentialShapeInTheWorkingTree scans every tracked file.
