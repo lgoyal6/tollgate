@@ -38,6 +38,9 @@ type Config struct {
 	// exists as the benchmark floor for measuring what limiting costs).
 	LimiterBackend    string
 	RateLimitFailOpen bool
+	// BudgetFailOpen mirrors RateLimitFailOpen: a ledger blip should not take
+	// every tenant to zero, and the error is alerted on instead.
+	BudgetFailOpen bool
 
 	ReloadPollInterval time.Duration
 	ReloadDebounce     time.Duration
@@ -142,6 +145,9 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if cfg.BudgetFailOpen, err = getBool("BUDGET_FAIL_OPEN", true); err != nil {
+		return Config{}, err
+	}
 	if cfg.RateLimitFailOpen, err = getBool("RATE_LIMIT_FAIL_OPEN", true); err != nil {
 		return Config{}, err
 	}

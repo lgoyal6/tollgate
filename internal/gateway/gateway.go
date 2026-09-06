@@ -22,6 +22,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/lgoyal6/tollgate/internal/admin"
+	"github.com/lgoyal6/tollgate/internal/budget"
 	"github.com/lgoyal6/tollgate/internal/config"
 	"github.com/lgoyal6/tollgate/internal/jwt"
 	"github.com/lgoyal6/tollgate/internal/middleware"
@@ -213,6 +214,13 @@ func (g *Gateway) handler() http.Handler {
 	// admission control costs.
 	if g.limiter != nil {
 		mws = append(mws, middleware.RateLimit(g.limiter, g.cfg.RateLimitFailOpen, g.metrics, g.logger))
+	}
+	// Budget sits inside RateLimit and outside the proxy: a request refused on
+	// rate must not take a spend hold, and one refused on budget must not reach
+	// the upstream. Tenants with no budget row are unlimited, so adding this to
+	// the chain changes nothing until an operator sets a limit.
+	if g.store != nil {
+		mws = append(mws, middleware.Budget(budget.New(g.store.Pool), g.cfg.BudgetFailOpen, g.logger))
 	}
 	chain := middleware.Chain(px, mws...)
 	if g.admin == nil {

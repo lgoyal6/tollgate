@@ -18,6 +18,54 @@ Alice's key goes in, the gateway strips it and attaches the team's shared
 credential on the way out, and her fourth request in a minute is her own
 problem. Reproduce that recording with `./docs/demo-setup.sh && vhs docs/demo.tape`.
 
+### Spend budgets, not just request rates
+
+A rate limit bounds how many requests a teammate sends. It does not bound what they
+cost, and on an LLM upstream those differ by orders of magnitude - one long-context
+request can outspend a thousand cheap ones while sitting comfortably inside the rate
+limit. Since the problem this gateway exists for is "the shared budget is gone by
+judging", rate limiting alone does not actually solve it.
+
+So each tenant can also carry a dollar budget. Before a request is forwarded the
+gateway holds a conservative upper bound against that budget, computed from the
+model's price and the caller's own `max_tokens`; after the response it settles the
+hold against the usage the provider actually reported. Money is integer micros
+(1e-6 USD) end to end - never floats, because provider prices are quoted per million
+tokens and repeatedly adding IEEE-754 fractions to a running balance loses cents.
+
+```
+$ curl -H "Authorization: Bearer tg_..." ... /llm/v1/messages
+HTTP/1.1 200 OK
+X-Budget-Remaining-Micros: 34934
+...
+HTTP/1.1 402 Payment Required
+X-Budget-Exceeded: 1
+{"error":"tenant budget exhausted: this request's maximum cost exceeds the remaining budget"}
+```
+
+The parts that are easy to get wrong, and what they do here:
+
+- **Concurrent requests cannot each be admitted against the same headroom.** The
+  tenant row is locked `FOR UPDATE` across the check-and-insert. Dropping that lock
+  admits 16 reservations against a 10-unit budget in the concurrency test.
+- **A retry is not a second charge.** Entries are unique per `(tenant, request_id)`,
+  so a replayed reserve or settle is a no-op.
+- **A broken stream does not refund.** If the connection dies after bytes went
+  upstream the hold is marked `uncertain` and *kept*: the provider may still bill in
+  full, and releasing there would let a client buy free tokens by hanging up. Only a
+  request that provably never reached the upstream is released.
+- **A crash does not lose the hold.** Reservations are rows, so an interrupted
+  gateway leaves them open and findable (`OpenOlderThan`) rather than leaked.
+
+Limits of the ceiling, stated rather than hidden: the hold is only as good as the
+declared `max_tokens` and the price table. A provider that bills beyond the declared
+ceiling settles higher than it held, so a tenant can finish one request above its
+limit - visible in the ledger, and the next request is refused, but not prevented.
+Requests with no declared ceiling, or on a model with no known price, are tracked and
+never refused; refusing on a guessed price would be worse than not enforcing.
+A tenant with no budget row is unlimited, so turning this on cannot brick a
+running deployment.
+
 Everything interesting is hand-rolled on purpose - the token bucket and sliding-window-log limiters, the circuit breaker, jittered retries, request hedging, and the reverse proxy itself. The only dependencies are the Redis client, the Postgres driver, OpenTelemetry, and the Prometheus client. Router is stdlib `net/http`.
 
 ## Run it for your team (the shared-key setup)
