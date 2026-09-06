@@ -297,11 +297,16 @@ the bypass restated.
 ### Local (docker compose)
 
 ```bash
-make up      # gateway + redis + postgres + 2 upstreams + prometheus + jaeger
-make seed    # migrations + demo tenants; prints API key exports - eval them
-eval "$(scripts/seed.sh compose | grep '^export')"
+make up                                             # gateway + redis + postgres + 2 upstreams + prometheus + jaeger
+eval "$(scripts/seed.sh compose | grep '^export')"  # demo tenants; puts their API keys in this shell
 curl -H "X-API-Key: $TOLLGATE_KEY_LOADTEST" localhost:8080/echo/hello
 ```
+
+`make seed` is the same thing without the `eval`, for when you only want to look
+at the keys rather than use them. Either way the schema is already there: the
+compose gateway runs with `AUTO_MIGRATE=true`, because the image is distroless
+and a fresh Postgres volume has no tables for it to read at boot. Seeding adds
+tenants and routes to a schema that already exists.
 
 The console is at <http://localhost:8080/_admin/>; `make up` prints the local
 `ADMIN_TOKEN` it defaulted to. Override it with `export ADMIN_TOKEN=...` before

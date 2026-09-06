@@ -47,6 +47,15 @@ services:
       TRACE_SAMPLE_RATIO: "0.2"
       ACCESS_LOG_SAMPLE: "1"
       LOG_LEVEL: info
+      # The same reason it exists for a PaaS applies here: this image is
+      # distroless, so nothing inside the container can apply a .sql file, and
+      # `make up` brings the gateway up against a Postgres volume that has
+      # never been migrated. Without this the gateway exits at boot with
+      # `relation "tenants" does not exist`, `make up` still reports success,
+      # and the console it just advertised refuses the connection. `make seed`
+      # cannot rescue it either, because it issues keys through
+      # `docker compose exec gateway`.
+      AUTO_MIGRATE: "true"
       # Management console + API at /_admin/. Unset it and the whole surface
       # disappears; this local default is not a secret and must not be reused
       # anywhere reachable.
