@@ -31,6 +31,17 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: /metrics
     spec:
+      # runAsNonRoot alone only asserts "not uid 0". If the image never declares a
+      # USER the kubelet refuses to start the pod rather than choosing one, so the
+      # uid is named here and the chart works against a plain distroless base.
+      # Read from values rather than hardcoded, so an operator whose base image
+      # uses a different uid can change it without editing a template.
+      securityContext:
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
       # DRAIN_DELAY + SHUTDOWN_TIMEOUT must fit inside this budget.
       terminationGracePeriodSeconds: 40
       containers:
@@ -79,7 +90,17 @@ spec:
               port: admin
             periodSeconds: 10
             failureThreshold: 3
+          # Kubernetes "restricted" Pod Security Standard. The three fields that
+          # were already here cover privilege escalation, a writable root and
+          # root itself; dropping ALL capabilities and pinning a seccomp profile
+          # are the two the restricted profile also requires, and without them
+          # the pod is rejected outright by a namespace labelled
+          # pod-security.kubernetes.io/enforce=restricted.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault

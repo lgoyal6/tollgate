@@ -66,3 +66,27 @@ demoUpstreams:
   b:
     baseDelayMs: "20"
     jitterMs: "30"
+
+# Pod-level security context. Pinned rather than left to the image so the chart
+# satisfies the "restricted" Pod Security Standard against any base image.
+securityContext:
+  runAsUser: 65532   # nonroot, matches distroless
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# Default-deny egress with an explicit allowlist. Off by default: it is only
+# correct once the cluster's CNI actually enforces NetworkPolicy (kind's default
+# kindnet does NOT - it accepts the object and ignores it), and turning it on
+# under a non-enforcing CNI would create a false sense of containment.
+networkPolicy:
+  enabled: false
+  # CIDRs the gateway may reach for upstream LLM providers. 0.0.0.0/0 minus
+  # private ranges: the gateway must not be able to reach cluster-internal
+  # services it was never configured for.
+  upstreamCIDRs:
+    - 0.0.0.0/0
+  excludePrivateCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
