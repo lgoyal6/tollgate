@@ -11,6 +11,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,12 +52,23 @@ type TenantCounters struct {
 	ServerErr float64 `json:"server_errors"`
 }
 
+// Reloader is the config snapshot this replica serves requests from. The
+// management API refreshes it after every write, because a key lives in two
+// places: the row it was written to, and the snapshot the request path
+// actually authenticates against. Without this the watcher would still pick
+// the change up, but only after its debounce or its poll, and a revocation
+// that answers 200 while the credential still works is not a revocation.
+type Reloader interface {
+	Load(context.Context) error
+}
+
 // Server is the management handler.
 type Server struct {
-	store  *store.Store
-	usage  Usage
-	token  string
-	logger *slog.Logger
+	store    *store.Store
+	usage    Usage
+	token    string
+	logger   *slog.Logger
+	reloader Reloader
 
 	console *template.Template
 	mux     *http.ServeMux
@@ -63,7 +77,10 @@ type Server struct {
 // New builds the management handler. It returns nil when token is empty,
 // which callers must treat as "management disabled" rather than an error:
 // failing closed is the point.
-func New(st *store.Store, usage Usage, token string, logger *slog.Logger) (*Server, error) {
+//
+// reloader may be nil, in which case writes bind whenever the watcher next
+// reloads; the gateway always passes one.
+func New(st *store.Store, usage Usage, token string, logger *slog.Logger, reloader Reloader) (*Server, error) {
 	if token == "" {
 		return nil, nil
 	}
@@ -74,30 +91,157 @@ func New(st *store.Store, usage Usage, token string, logger *slog.Logger) (*Serv
 	if err != nil {
 		return nil, fmt.Errorf("parsing console template: %w", err)
 	}
-	s := &Server{store: st, usage: usage, token: token, logger: logger, console: tmpl}
+	s := &Server{store: st, usage: usage, token: token, logger: logger, reloader: reloader, console: tmpl}
 	s.routes()
 	return s, nil
 }
 
+// operation is one JSON endpoint of the management API.
+//
+// A table rather than a run of mux.HandleFunc calls because openapi.json is
+// the published contract for this API, and a contract that is written down
+// separately from the code drifts from it. With the surface enumerable, the
+// test in contract_test.go can compare the two in both directions: an
+// endpoint added here without a spec entry fails, and so does a spec entry
+// with no endpoint behind it.
+type operation struct {
+	Method string
+	Path   string // ServeMux pattern, {id} for a path parameter
+	// Exactly one of these is set. api handlers answer JSON from behind the
+	// admin token; raw handlers answer for themselves and are public.
+	api func(http.ResponseWriter, *http.Request) (any, int, error)
+	raw http.HandlerFunc
+}
+
+func (s *Server) apiOperations() []operation {
+	return []operation{
+		{Method: "GET", Path: "/api/overview", api: s.handleOverview},
+		{Method: "POST", Path: "/api/tenants", api: s.handleCreateTenant},
+		{Method: "PUT", Path: "/api/tenants/{id}", api: s.handleUpdateTenant},
+		{Method: "POST", Path: "/api/tenants/{id}/keys", api: s.handleIssueKey},
+		{Method: "POST", Path: "/api/tenants/{id}/routes", api: s.handleAddRoute},
+		{Method: "POST", Path: "/api/keys/{id}/rotate", api: s.handleRotateKey},
+		{Method: "DELETE", Path: "/api/keys/{id}", api: s.handleRevokeKey},
+		{Method: "DELETE", Path: "/api/routes/{id}", api: s.handleDeleteRoute},
+	}
+}
+
+// operations is every pattern this server serves, and the only place any of
+// them is registered. The console is in here too rather than being wired
+// straight onto the mux, because a handler that does not pass through this
+// table is a handler openapi.json is never compared against, and an
+// undocumented endpoint on this surface is one that issues keys.
+func (s *Server) operations() []operation {
+	return append([]operation{
+		// {$} rather than / so the console matches the mount root only. As a
+		// bare "/" it would also answer for every unmatched path, which is
+		// how an unknown endpoint came to reply in text/plain.
+		{Method: "GET", Path: "/{$}", raw: s.handleConsole},
+	}, s.apiOperations()...)
+}
+
 func (s *Server) routes() {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /", s.handleConsole)
-	mux.HandleFunc("GET /api/overview", s.jsonAuth(s.handleOverview))
-	mux.HandleFunc("POST /api/tenants", s.jsonAuth(s.handleCreateTenant))
-	mux.HandleFunc("PUT /api/tenants/{id}", s.jsonAuth(s.handleUpdateTenant))
-	mux.HandleFunc("POST /api/tenants/{id}/keys", s.jsonAuth(s.handleIssueKey))
-	mux.HandleFunc("POST /api/tenants/{id}/routes", s.jsonAuth(s.handleAddRoute))
-	mux.HandleFunc("POST /api/keys/{id}/rotate", s.jsonAuth(s.handleRotateKey))
-	mux.HandleFunc("DELETE /api/keys/{id}", s.jsonAuth(s.handleRevokeKey))
-	mux.HandleFunc("DELETE /api/routes/{id}", s.jsonAuth(s.handleDeleteRoute))
-
+	allowed := map[string][]string{}
+	for _, op := range s.operations() {
+		pattern := op.Method + " " + op.Path
+		if op.raw != nil {
+			mux.HandleFunc(pattern, op.raw)
+		} else {
+			mux.HandleFunc(pattern, s.jsonAuth(op.api))
+		}
+		allowed[op.Path] = append(allowed[op.Path], op.Method)
+	}
+	// The one literal, and not an endpoint: it is what answers when no
+	// endpoint matched. net/http's mux would otherwise write those two
+	// replies itself, in text/plain with no `error` field, which is a
+	// response shape this API's contract does not contain.
+	mux.Handle("/", s.unmatched(allowed))
 	s.mux = mux
+}
+
+// unmatched answers for every path and method no operation claims: 405 with
+// an Allow header when the path exists under another method, 404 otherwise,
+// both in the same JSON envelope as everything else here.
+func (s *Server) unmatched(allowed map[string][]string) http.Handler {
+	// A second mux, registered by path with no method, purely to answer "is
+	// this path one of ours?" - which is what separates a 405 from a 404.
+	paths := http.NewServeMux()
+	for pattern, methods := range allowed {
+		sort.Strings(methods)
+		allow := strings.Join(methods, ", ")
+		paths.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Allow", allow)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := paths.Handler(r); pattern != "" {
+			paths.ServeHTTP(w, r)
+			return
+		}
+		s.notFound(w)
+	})
+}
+
+// MountOn returns a handler that answers for everything under MountPath with
+// surface, and hands every other request to next.
+//
+// Deliberately not an http.ServeMux. net/http's router answers a path that is
+// not in canonical form with a 307 to the cleaned path, before any handler
+// runs, so a POST to /_admin/api/tenants//keys is told to re-send its body to
+// a path with the tenant parameter collapsed out of it. That is a status this
+// API does not declare, with an empty body and no content type, and on a
+// surface that issues credentials it is worse than a refusal. Two prefixes do
+// not need a router.
+func MountOn(surface, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case p == MountPath:
+			http.Redirect(w, r, MountPath+"/", http.StatusMovedPermanently)
+		case strings.HasPrefix(p, MountPath+"/"):
+			surface.ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // Handler returns the management handler rooted at MountPath.
 func (s *Server) Handler() http.Handler {
-	return http.StripPrefix(MountPath, s.mux)
+	return http.StripPrefix(MountPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http's mux answers a path that needs cleaning - the empty path
+		// parameter in /api/tenants//keys, say - with a 307 to the cleaned
+		// path: no body, no content type, and a status this API does not
+		// declare. On a management API that is worse than a refusal, because
+		// a client that follows it re-sends its body to a path where a
+		// parameter has silently collapsed away. So the surface refuses.
+		if needsCleaning(r.URL.EscapedPath()) {
+			s.notFound(w)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	}))
+}
+
+// needsCleaning reports whether net/http's mux would rewrite this path, using
+// the same rule it does: path.Clean, with a trailing slash preserved.
+func needsCleaning(p string) bool {
+	if p == "" {
+		return true
+	}
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") && cleaned != "/" {
+		cleaned += "/"
+	}
+	return p != cleaned
+}
+
+// notFound is the one 404 body this surface has. It is deliberately the same
+// sentence whatever the path was, so that failing to find an endpoint cannot
+// be used to map the ones that exist.
+func (s *Server) notFound(w http.ResponseWriter) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
 }
 
 // jsonAuth wraps a handler with bearer token authentication. The comparison is
@@ -111,19 +255,66 @@ func (s *Server) jsonAuth(h func(http.ResponseWriter, *http.Request) (any, int, 
 		}
 		body, code, err := h(w, r)
 		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				code = http.StatusNotFound
-			} else if code == 0 {
-				code = http.StatusBadRequest
-			}
-			s.logger.Warn("admin request failed", "path", r.URL.Path, "method", r.Method, "err", err)
-			writeJSON(w, code, map[string]string{"error": err.Error()})
+			code, msg := clientError(err, code)
+			// The full error, driver text and all, goes to the operator's log
+			// and nowhere else.
+			s.logger.Warn("admin request failed", "path", r.URL.Path, "method", r.Method,
+				"status", code, "err", err)
+			writeJSON(w, code, map[string]string{"error": msg})
 			return
 		}
 		if code == 0 {
 			code = http.StatusOK
 		}
+		// Refresh before answering, not after, so the response is only sent
+		// once this replica is serving the change. Every write here is a
+		// human-scale event, so a full snapshot load per call is cheap next
+		// to the alternative: a revoke that returns 200 while the credential
+		// still works for another debounce interval.
+		if r.Method != http.MethodGet {
+			s.refresh(r.Context())
+		}
 		writeJSON(w, code, body)
+	}
+}
+
+// clientError decides what a caller is told about a failure.
+//
+// The rule is an allow-list, not a deny-list: a message reaches the client
+// only if something deliberately marked it as being about the client's own
+// input. Everything else becomes a fixed sentence, because the alternative -
+// relaying err.Error() - relayed the table and constraint names out of
+// Postgres foreign key violations, "no rows in result set" out of pgx, and
+// the server's own FATAL text when the database went away.
+func clientError(err error, code int) (int, string) {
+	if errors.Is(err, store.ErrNotFound) {
+		return http.StatusNotFound, "not found"
+	}
+	var invalid *store.ValidationError
+	if errors.As(err, &invalid) {
+		if code == 0 || code >= 500 {
+			code = http.StatusBadRequest
+		}
+		return code, invalid.Error()
+	}
+	// Nothing marked this one as being about the caller's input, so it is the
+	// gateway's problem and not theirs; answering 4xx would be a lie about
+	// whose fault it is, and every path here can fail on the database.
+	return http.StatusInternalServerError, "the request could not be completed"
+}
+
+// refresh reloads this replica's config snapshot after a write.
+//
+// A failure is logged rather than returned: the row is already committed, so
+// answering with an error would be a lie about what happened, and the
+// watcher's LISTEN/NOTIFY path converges anyway. Other replicas always take
+// that path, so the guarantee this buys is per process, not cluster-wide.
+func (s *Server) refresh(ctx context.Context) {
+	if s.reloader == nil {
+		return
+	}
+	if err := s.reloader.Load(ctx); err != nil {
+		s.logger.Warn("config snapshot reload after management write failed; change binds when the watcher next reloads", "err", err)
 	}
 }
 
@@ -139,11 +330,7 @@ func (s *Server) authorized(r *http.Request) bool {
 // handleConsole serves the single-page console. It carries no secrets: the
 // operator pastes the admin token into the page, and the page holds it in
 // memory only, so the token is never written to disk or into a URL.
-func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
+func (s *Server) handleConsole(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := s.console.Execute(w, map[string]string{"Mount": MountPath}); err != nil {
@@ -255,7 +442,7 @@ func (s *Server) handleCreateTenant(_ http.ResponseWriter, r *http.Request) (any
 		return nil, http.StatusBadRequest, err
 	}
 	if req.ID == "" {
-		return nil, http.StatusBadRequest, fmt.Errorf("id is required")
+		return nil, http.StatusBadRequest, store.Invalid("id is required")
 	}
 	if err := s.store.CreateTenant(r.Context(), req.spec(req.ID)); err != nil {
 		return nil, http.StatusBadRequest, err
@@ -377,9 +564,11 @@ func (s *Server) handleRevokeKey(_ http.ResponseWriter, r *http.Request) (any, i
 }
 
 func (s *Server) handleDeleteRoute(_ http.ResponseWriter, r *http.Request) (any, int, error) {
+	// The parse error itself is not repeated: strconv names its own function
+	// and echoes the input back, and neither is anything the caller needs.
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("route id must be an integer: %w", err)
+		return nil, http.StatusBadRequest, store.Invalid("route id must be an integer")
 	}
 	if err := s.store.DeleteRoute(r.Context(), id); err != nil {
 		return nil, 0, err
@@ -396,7 +585,9 @@ func decode(r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return fmt.Errorf("parsing request body: %w", err)
+		// Safe to repeat: a JSON syntax or type error describes the body the
+		// caller just sent, in terms of the fields this API publishes.
+		return store.Invalid("parsing request body: %v", err)
 	}
 	return nil
 }
@@ -410,7 +601,7 @@ func decodeOptional(r *http.Request, dst any) error {
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		return fmt.Errorf("parsing request body: %w", err)
+		return store.Invalid("parsing request body: %v", err)
 	}
 	return nil
 }

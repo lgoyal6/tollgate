@@ -312,6 +312,12 @@ The console is at <http://localhost:8080/_admin/>; `make up` prints the local
 `ADMIN_TOKEN` it defaulted to. Override it with `export ADMIN_TOKEN=...` before
 `make up`.
 
+The API behind the console is specified in `internal/admin/openapi.json`. The
+document is checked against the router in both directions on every test run: an
+endpoint that is served without being declared fails, and so does a declared
+endpoint that nothing serves. Every operation is driven with generated boundary
+inputs, and a status code the document does not list fails too.
+
 ### Kubernetes (kind) - the full story
 
 ```bash
@@ -363,7 +369,7 @@ internal/resilience    breaker.go, retry.go, hedge.go
 internal/proxy         hand-rolled forwarding engine
 internal/middleware    the request pipeline
 internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher, config writers
-internal/admin         management API + console (only built when ADMIN_TOKEN is set)
+internal/admin         management API + console + openapi.json (only built when ADMIN_TOKEN is set)
 internal/auth          key format, hashing, verification, scopes, rotation
 internal/jwt           JWS verification, JWKS cache, claims, RFC 8705 binding
 internal/observability metrics registry, otel setup, slog

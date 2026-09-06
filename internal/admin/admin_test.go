@@ -27,7 +27,7 @@ func quietLogger() *slog.Logger {
 }
 
 func TestNewDisabledWithoutToken(t *testing.T) {
-	s, err := New(nil, nil, "", quietLogger())
+	s, err := New(nil, nil, "", quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("New with empty token: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestNewDisabledWithoutToken(t *testing.T) {
 }
 
 func TestNewRejectsShortToken(t *testing.T) {
-	s, err := New(nil, nil, "short", quietLogger())
+	s, err := New(nil, nil, "short", quietLogger(), nil)
 	if err == nil {
 		t.Fatal("expected a short token to be rejected")
 	}
@@ -49,13 +49,13 @@ func TestNewRejectsShortToken(t *testing.T) {
 // serve builds the handler as the gateway mounts it, at MountPath.
 func serve(t *testing.T, st *store.Store) http.Handler {
 	t.Helper()
-	s, err := New(st, nil, testToken, quietLogger())
+	s, err := New(st, nil, testToken, quietLogger(), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	mux := http.NewServeMux()
-	mux.Handle(MountPath+"/", s.Handler())
-	return mux
+	// Mounted exactly as the gateway mounts it, so the tests measure the
+	// surface a client actually reaches.
+	return MountOn(s.Handler(), http.NotFoundHandler())
 }
 
 // TestEveryAPIRouteRequiresTheToken is the security property of this package:
@@ -195,6 +195,12 @@ func testStore(t *testing.T) *store.Store {
 		t.Fatalf("connecting to test postgres: %v", err)
 	}
 	t.Cleanup(st.Close)
+	// Migrations here rather than in each test: CI points these at a fresh
+	// container, and a suite that assumed the schema already existed would
+	// fail on the first run and pass on every one after.
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("applying migrations to test postgres: %v", err)
+	}
 	return st
 }
 

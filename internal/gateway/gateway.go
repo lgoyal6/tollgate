@@ -130,7 +130,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 	}
 
 	var err error
-	g.admin, err = admin.New(st, usageFromMetrics{g.metrics}, cfg.AdminToken, logger)
+	g.admin, err = admin.New(st, usageFromMetrics{g.metrics}, cfg.AdminToken, logger, g.watcher)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("initializing management API: %w", err)
@@ -239,11 +239,7 @@ func (g *Gateway) handler() http.Handler {
 	// port. It is matched ahead of route lookup, so a tenant route cannot
 	// shadow it, and it sits outside the tenant middleware chain because it
 	// authenticates with the admin token rather than a tenant API key.
-	mux := http.NewServeMux()
-	mux.Handle(admin.MountPath+"/", g.adminSurface())
-	mux.Handle(admin.MountPath, http.RedirectHandler(admin.MountPath+"/", http.StatusMovedPermanently))
-	mux.Handle("/", chain)
-	return mux
+	return admin.MountOn(g.adminSurface(), chain)
 }
 
 // adminSurface wraps the management handler so a bug in it cannot take down
@@ -268,14 +264,15 @@ func (g *Gateway) adminHandler() http.Handler {
 		fmt.Fprintln(w, "ready")
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g.metrics.Registry, promhttp.HandlerOpts{}))
-	if g.admin != nil {
-		mux.Handle(admin.MountPath+"/", g.adminSurface())
-		mux.Handle(admin.MountPath, http.RedirectHandler(admin.MountPath+"/", http.StatusMovedPermanently))
-	}
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	return mux
+	if g.admin == nil {
+		return mux
+	}
+	// Ahead of the mux rather than inside it, for the reason MountOn spells
+	// out: a router that rewrites the path answers before the surface does.
+	return admin.MountOn(g.adminSurface(), mux)
 }
 
 // Run blocks until SIGINT/SIGTERM, then drains and exits.

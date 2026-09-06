@@ -1,0 +1,844 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Tollgate management API",
+    "version": "1",
+    "description": "The gateway's management surface: tenants, their routes, and the per-teammate API keys that spend the shared upstream credential. Every operation except the console requires the ADMIN_TOKEN bearer token; the surface does not exist at all when that token is unset. Paths are relative to the mount prefix /_admin. Every response body on this surface is a JSON object. Failures carry a single `error` string and nothing else: no table, column or constraint name, no driver text, no host the gateway failed to reach. A path this document does not declare answers 404 in that same envelope; a declared path addressed with a method it does not declare answers 405, with an Allow header naming exactly the methods listed for that path here. This document is checked against the running router by internal/admin/surface_test.go and internal/admin/contract_test.go, in both directions."
+  },
+  "servers": [
+    {
+      "url": "/_admin"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "adminToken": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "IssuedKey": {
+        "type": "object",
+        "description": "The only response that carries a secret. The plaintext is returned once at issue time and is not recoverable afterwards; only its SHA-256 is stored.",
+        "required": [
+          "key_id",
+          "key",
+          "tenant",
+          "note"
+        ],
+        "properties": {
+          "key_id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "replaced": {
+            "type": "string"
+          },
+          "grace_until": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      },
+      "Overview": {
+        "type": "object",
+        "required": [
+          "tenants",
+          "routes",
+          "keys",
+          "usage"
+        ],
+        "properties": {
+          "tenants": {
+            "type": "array"
+          },
+          "routes": {
+            "type": "array"
+          },
+          "keys": {
+            "type": "array",
+            "description": "Key identity and lifecycle only. secret_hash is never serialised here."
+          },
+          "usage": {
+            "type": "object"
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "adminToken": []
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "getConsole",
+        "summary": "The single-page management console.",
+        "description": "HTML rather than JSON, and the one operation with no security requirement: the page ships no data and holds no token. The operator pastes the admin token into it at runtime and it is kept in memory only, never written to disk or into a URL.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "the console page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the console is GET only; Allow names the methods this path serves",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/overview": {
+      "get": {
+        "operationId": "getOverview",
+        "summary": "Tenants, routes, keys and per-replica usage counters in one round trip.",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "database unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tenants": {
+      "post": {
+        "operationId": "createTenant",
+        "summary": "Create a tenant and its rate limit policy.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "algorithm": {
+                    "type": "string",
+                    "enum": [
+                      "token_bucket",
+                      "sliding_window"
+                    ]
+                  },
+                  "rate": {
+                    "type": "number"
+                  },
+                  "burst": {
+                    "type": "integer"
+                  },
+                  "window_ms": {
+                    "type": "integer"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unparseable body, unknown field, missing id, or a policy the schema rejects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tenants/{id}": {
+      "put": {
+        "operationId": "updateTenant",
+        "summary": "Replace a tenant's name, enabled flag and full rate limit policy.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "algorithm": {
+                    "type": "string"
+                  },
+                  "rate": {
+                    "type": "number"
+                  },
+                  "burst": {
+                    "type": "integer"
+                  },
+                  "window_ms": {
+                    "type": "integer"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unparseable body, unknown field, or an invalid policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tenants/{id}/keys": {
+      "post": {
+        "operationId": "issueKey",
+        "summary": "Issue a new API key for the tenant. The plaintext is shown once.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unknown field, unparseable body, or no such tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the CSPRNG failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tenants/{id}/routes": {
+      "post": {
+        "operationId": "addRoute",
+        "summary": "Point a path prefix owned by this tenant at an upstream.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "path_prefix",
+                  "upstream"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "path_prefix": {
+                    "type": "string",
+                    "pattern": "^/"
+                  },
+                  "upstream": {
+                    "type": "string"
+                  },
+                  "strip_prefix": {
+                    "type": "boolean"
+                  },
+                  "timeout_ms": {
+                    "type": "integer"
+                  },
+                  "retry_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "required_scope": {
+                    "type": "string"
+                  },
+                  "auth_header": {
+                    "type": "string",
+                    "description": "Header the upstream credential is sent in."
+                  },
+                  "auth_env": {
+                    "type": "string",
+                    "description": "NAME of the gateway environment variable holding the credential. The value never leaves the gateway process and is never stored."
+                  },
+                  "auth_prefix": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unparseable body, unknown field, or a route the schema rejects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/keys/{id}/rotate": {
+      "post": {
+        "operationId": "rotateKey",
+        "summary": "Move a key into a grace window and issue its replacement, atomically.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "grace_seconds": {
+                    "type": "integer",
+                    "description": "Defaults to 86400 when absent or not positive."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unknown field, unparseable body, or the key is not active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "summary": "Revoke a key immediately, with no grace window.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such key, or it was already revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routes/{id}": {
+      "delete": {
+        "operationId": "deleteRoute",
+        "summary": "Delete one route by its integer id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "the id is not an integer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the path exists but does not serve this method; Allow names the ones it does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "the gateway could not complete the request; the reason is in its log, not in this body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
