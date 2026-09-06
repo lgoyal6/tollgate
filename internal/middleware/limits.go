@@ -15,6 +15,10 @@ import (
 	"github.com/lgoyal6/tollgate/internal/limits"
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // RequestSize bounds what one caller may hand the gateway.
@@ -166,7 +170,26 @@ func Concurrency(cfg limits.Config, m *observability.Metrics) Middleware {
 				return
 			}
 			g := gates.gateFor(tenant.ID)
-			reason, ok := g.acquire(r.Context(), cfg)
+			// The queue. A request that finds the tenant's slots full waits here,
+			// and that wait is indistinguishable from a slow upstream in every
+			// other signal the gateway emits: the access log records one duration,
+			// and the request histogram is over all tenants at once. Spanned
+			// unconditionally rather than only when it blocks, because "this
+			// request did not queue" is the answer as often as the other one.
+			ctx, queueSpan := tracer.Start(r.Context(), "queue.wait",
+				oteltrace.WithAttributes(
+					attribute.Int("queue.capacity", cfg.MaxInFlightPerTenant),
+				))
+			reason, ok := g.acquire(ctx, cfg)
+			queueSpan.SetAttributes(attribute.Bool("queue.admitted", ok))
+			if !ok {
+				queueSpan.SetAttributes(attribute.String("queue.rejected", reason))
+			}
+			queueSpan.End()
+			// Deliberately NOT r.WithContext(ctx): the queue span is over once the
+			// slot is held, and carrying its context onward would make the proxy
+			// call a child of the wait it is not inside, which reads in the viewer
+			// as the queue taking as long as the upstream.
 			if !ok {
 				m.LimitRejections.WithLabelValues(tenant.ID, reason).Inc()
 				if reason == "client_gone" {
@@ -255,3 +278,7 @@ func (g *gate) acquire(ctx context.Context, cfg limits.Config) (string, bool) {
 }
 
 func (g *gate) release() { <-g.slots }
+
+// One tracer per package, resolved through the global provider so it is a no-op
+// until internal/observability installs one.
+var tracer = otel.Tracer("tollgate/middleware")
