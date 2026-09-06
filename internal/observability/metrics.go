@@ -45,6 +45,15 @@ type Metrics struct {
 	// reason is "missing" or "rejected".
 	UpstreamCredentialFailures *prometheus.CounterVec // upstream, reason
 
+	// LimitRejections counts requests refused by an abuse bound rather than
+	// by rate or budget. The reason label is a fixed set defined in
+	// internal/middleware/limits.go, so it stays bounded like every other.
+	LimitRejections *prometheus.CounterVec // tenant, reason
+	// ResponseTruncations counts upstream responses cut short at
+	// MaxResponseBytes. Anything above zero is either a misbehaving upstream
+	// or a cap set too low, and the two are told apart by which upstream.
+	ResponseTruncations *prometheus.CounterVec // upstream
+
 	ConfigReloads        prometheus.Counter
 	ConfigReloadFailures prometheus.Counter
 }
@@ -117,6 +126,14 @@ func NewMetrics() *Metrics {
 			Name: "tollgate_auth_failures_total",
 			Help: "Rejected credentials by reason.",
 		}, []string{"reason"}),
+		LimitRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tollgate_limit_rejections_total",
+			Help: "Requests refused by an abuse limit, by tenant and reason.",
+		}, []string{"tenant", "reason"}),
+		ResponseTruncations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tollgate_response_truncations_total",
+			Help: "Upstream responses cut short at the response size limit.",
+		}, []string{"upstream"}),
 		ConfigReloads: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "tollgate_config_reloads_total",
 			Help: "Successful config snapshot reloads.",
@@ -134,6 +151,7 @@ func NewMetrics() *Metrics {
 		m.BreakerState, m.BreakerTransitions,
 		m.AuthFailures,
 		m.UpstreamCredentialFailures,
+		m.LimitRejections, m.ResponseTruncations,
 		m.ConfigReloads, m.ConfigReloadFailures,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
