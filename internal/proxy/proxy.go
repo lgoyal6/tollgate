@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/lgoyal6/tollgate/internal/limits"
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
 	"github.com/lgoyal6/tollgate/internal/resilience"
@@ -37,6 +38,7 @@ type Proxy struct {
 	retry          resilience.RetryPolicy
 	hedgingEnabled bool
 	maxBodyBuffer  int64
+	limits         limits.Config
 	logger         *slog.Logger
 	metrics        *observability.Metrics
 	tracer         oteltrace.Tracer
@@ -48,8 +50,11 @@ type Options struct {
 	HedgingEnabled bool
 	MaxBodyBuffer  int64
 	MaxIdlePerHost int
-	Logger         *slog.Logger
-	Metrics        *observability.Metrics
+	// Limits carries the response size cap, the total request deadline and
+	// the retry ceiling. A zero value means each of those is not enforced.
+	Limits  limits.Config
+	Logger  *slog.Logger
+	Metrics *observability.Metrics
 }
 
 func New(opts Options) *Proxy {
@@ -72,6 +77,7 @@ func New(opts Options) *Proxy {
 		retry:          resilience.DefaultRetryPolicy(),
 		hedgingEnabled: opts.HedgingEnabled,
 		maxBodyBuffer:  opts.MaxBodyBuffer,
+		limits:         opts.Limits,
 		logger:         opts.Logger,
 		metrics:        opts.Metrics,
 		tracer:         otel.Tracer("tollgate/proxy"),
@@ -102,12 +108,34 @@ func (p *Proxy) credentialFailure(route *store.Route, info *reqctx.Info, reason 
 		"credential_env", route.UpstreamAuthEnv)
 }
 
+// maxAttemptsHardCap bounds attempts regardless of what the route says.
+//
+// RetryMax is a column in Postgres, so it is whatever an operator (or a bad
+// migration, or a direct UPDATE) put there. Measured on this repo's harness, a
+// route with retry_max=20 produced 20 upstream attempts and tripped the
+// per-host circuit breaker, whose default MinRequests is 20. That breaker is
+// shared by every tenant routed to that host, so one row turns a single
+// tenant's misconfiguration into everybody's outage. Five attempts is enough
+// for the transient-failure case retries exist for; more is amplification.
+const maxAttemptsHardCap = 5
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	info := reqctx.InfoFrom(r.Context())
 	route := reqctx.RouteFrom(r.Context())
 	if route == nil {
 		p.fail(w, info, http.StatusInternalServerError, "proxy reached without a route", nil)
 		return
+	}
+
+	// One deadline for the whole exchange, covering every attempt and every
+	// backoff between them. The route timeout alone bounds a single attempt,
+	// so without this the real ceiling is route.Timeout multiplied by whatever
+	// retry count is in the database, and a request can hold a connection, a
+	// concurrency slot and a spend hold for all of it.
+	if p.limits.MaxRequestDuration > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), p.limits.MaxRequestDuration)
+		defer cancel()
+		r = r.WithContext(ctx)
 	}
 
 	body, replayable, err := p.bufferBody(r)
@@ -135,6 +163,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	defer resp.Body.Close()
 
+	// A declared length over the cap is refusable, because nothing has been
+	// written yet. This is the only path on which an oversize response can be
+	// turned into a clean status rather than a truncated stream.
+	if p.limits.MaxResponseBytes > 0 && resp.ContentLength > p.limits.MaxResponseBytes {
+		p.metrics.ResponseTruncations.WithLabelValues(route.Upstream.Host).Inc()
+		p.fail(w, info, http.StatusBadGateway, "upstream response too large", limits.ErrResponseTooLarge)
+		return
+	}
+
 	// An upstream that refuses a request carrying the gateway's own credential
 	// is the observable symptom of that credential having been revoked or
 	// expired. The response is still relayed unchanged - the gateway is a
@@ -150,6 +187,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	n, copyErr := p.copyBody(w, resp)
 	info.BytesOut = n
+	if errors.Is(copyErr, limits.ErrResponseTooLarge) {
+		// The status line is already on the wire, so the client gets a short
+		// body and no way to be told why. Stopping is still right: the
+		// alternative is relaying an unbounded stream the gateway pays egress
+		// on. The counter is what makes this visible.
+		p.metrics.ResponseTruncations.WithLabelValues(route.Upstream.Host).Inc()
+		info.Error = copyErr.Error()
+		p.logger.Warn("upstream response truncated at the size limit",
+			"request_id", info.RequestID, "upstream", route.Upstream.Host,
+			"limit", p.limits.MaxResponseBytes, "bytes", n)
+		return
+	}
 	if copyErr != nil && !errors.Is(copyErr, context.Canceled) {
 		// Headers are gone; nothing to send the client. Log and move on.
 		p.logger.Warn("response body copy interrupted",
@@ -165,6 +214,9 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 	attempts := 1
 	if canRepeat && route.RetryMax > 0 {
 		attempts = 1 + route.RetryMax
+	}
+	if attempts > maxAttemptsHardCap {
+		attempts = maxAttemptsHardCap
 	}
 
 	var lastErr error
@@ -399,15 +451,37 @@ func (p *Proxy) bufferBody(r *http.Request) ([]byte, bool, error) {
 // copyBody streams the upstream response to the client, flushing eagerly
 // when the length is unknown (SSE and friends).
 func (p *Proxy) copyBody(w http.ResponseWriter, resp *http.Response) (int64, error) {
+	src := io.Reader(resp.Body)
+	capped := p.limits.MaxResponseBytes > 0
+	if capped {
+		// One byte past the cap, so a response of exactly the cap still ends
+		// on EOF and only cap+1 counts as over.
+		src = io.LimitReader(resp.Body, p.limits.MaxResponseBytes+1)
+	}
 	if resp.ContentLength >= 0 {
-		return io.Copy(w, resp.Body)
+		// A declared length over the cap was already refused before the
+		// header went out, so this only catches an upstream that sent more
+		// than it declared.
+		n, err := io.Copy(w, src)
+		if capped && n > p.limits.MaxResponseBytes {
+			return n, limits.ErrResponseTooLarge
+		}
+		return n, err
 	}
 	rc := http.NewResponseController(w)
 	var total int64
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := src.Read(buf)
 		if n > 0 {
+			if capped && total+int64(n) > p.limits.MaxResponseBytes {
+				// Write only the part that fits, then stop: a streamed
+				// response has no declared length, so this is the first point
+				// at which the gateway can know it is over.
+				keep := p.limits.MaxResponseBytes - total
+				w.Write(buf[:keep]) //nolint:errcheck // the connection is being abandoned anyway
+				return p.limits.MaxResponseBytes, limits.ErrResponseTooLarge
+			}
 			wn, werr := w.Write(buf[:n])
 			total += int64(wn)
 			if werr != nil {
@@ -441,6 +515,11 @@ func (p *Proxy) fail(w http.ResponseWriter, info *reqctx.Info, status int, msg s
 // classifyError maps transport failures to gateway status codes.
 func classifyError(err error) (int, string) {
 	switch {
+	case errors.Is(err, limits.ErrRequestTooLarge):
+		// A chunked upload declares no length, so the cap can only fire while
+		// the body is being read - which here means while it is being sent
+		// upstream. 413 is still the honest answer to the client.
+		return http.StatusRequestEntityTooLarge, "request body too large"
 	case errors.Is(err, errBreakerOpen):
 		return http.StatusServiceUnavailable, "upstream unavailable (circuit open)"
 	case errors.Is(err, context.DeadlineExceeded):

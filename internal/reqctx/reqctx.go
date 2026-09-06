@@ -51,6 +51,7 @@ const (
 	tenantKey
 	routeKey
 	keyKey
+	decodedBodyKey
 )
 
 func WithInfo(ctx context.Context, info *Info) context.Context {
@@ -91,4 +92,22 @@ func WithKey(ctx context.Context, k *store.APIKey) context.Context {
 func KeyFrom(ctx context.Context) *store.APIKey {
 	k, _ := ctx.Value(keyKey).(*store.APIKey)
 	return k
+}
+
+// WithDecodedBody carries the inflated form of a compressed request body.
+//
+// The gateway forwards the compressed bytes untouched, so the only reader
+// that would otherwise see plaintext is whoever decompresses again. The
+// budget estimator needs the plaintext to find the model and the caller's
+// output ceiling, and without this it silently prices every gzipped request
+// at nothing, which is a budget bypass rather than a missing feature.
+func WithDecodedBody(ctx context.Context, body []byte) context.Context {
+	return context.WithValue(ctx, decodedBodyKey, body)
+}
+
+// DecodedBodyFrom returns the inflated body, or nil when the request did not
+// arrive compressed.
+func DecodedBodyFrom(ctx context.Context) []byte {
+	b, _ := ctx.Value(decodedBodyKey).([]byte)
+	return b
 }

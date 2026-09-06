@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lgoyal6/tollgate/internal/limits"
 )
 
 // Config holds every tunable for the gateway process. All values come from
@@ -50,6 +52,12 @@ type Config struct {
 	// MaxBodyBuffer caps how much of a request body is buffered to make it
 	// replayable for retries and hedging. Larger bodies are streamed once.
 	MaxBodyBuffer int64
+
+	// Limits are the abuse bounds: request size, decompressed size, response
+	// size, per-tenant concurrency and queue depth, and the total time one
+	// request may take. See internal/limits for what each one is for; the
+	// numbers the defaults come from are in RECORD_tollgate_limits.md.
+	Limits limits.Config
 
 	TraceSampleRatio float64
 	ServiceName      string
@@ -161,6 +169,9 @@ func Load() (Config, error) {
 	if cfg.MaxBodyBuffer, err = getInt64("MAX_BODY_BUFFER_BYTES", 1<<20); err != nil {
 		return Config{}, err
 	}
+	if cfg.Limits, err = loadLimits(); err != nil {
+		return Config{}, err
+	}
 	if cfg.TraceSampleRatio, err = getFloat("TRACE_SAMPLE_RATIO", 0.1); err != nil {
 		return Config{}, err
 	}
@@ -189,6 +200,62 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("TLS_CLIENT_CA_FILE needs TLS_CERT_FILE and TLS_KEY_FILE: a client certificate can only be requested on a TLS listener")
 	}
 	return cfg, nil
+}
+
+// loadLimits reads the abuse bounds. Every default here is derived from a
+// measurement rather than picked; the commands and numbers are recorded in
+// RECORD_tollgate_limits.md and reproducible with TOLLGATE_MEASURE=1.
+//
+// Setting any one of them to 0 disables that bound, which is the only way to
+// get the pre-limit behaviour back. That is deliberate: unbounded should be a
+// decision somebody made, not the value you get by not knowing about the knob.
+func loadLimits() (limits.Config, error) {
+	var (
+		c   limits.Config
+		err error
+	)
+	// 8 MiB: eight times the 1 MiB past which the gateway already stops
+	// pricing and stops buffering for retry, so nothing under the cap
+	// silently loses a feature, and under every provider's own request cap so
+	// the gateway refuses first and with a clearer error.
+	if c.MaxRequestBytes, err = getInt64("MAX_REQUEST_BYTES", 8<<20); err != nil {
+		return c, err
+	}
+	// The same 8 MiB after inflation. Compression buys a caller wire
+	// efficiency, not a bigger request: measured, padded JSON gzips at about
+	// 510:1, so a wire cap alone would admit 4 GiB of expansion.
+	if c.MaxDecompressedBytes, err = getInt64("MAX_DECOMPRESSED_BYTES", 8<<20); err != nil {
+		return c, err
+	}
+	// 32 MiB out. Measured, the gateway will currently relay a 512 MiB
+	// response in 278 ms without noticing, and it pays egress on all of it.
+	if c.MaxResponseBytes, err = getInt64("MAX_RESPONSE_BYTES", 32<<20); err != nil {
+		return c, err
+	}
+	// 64 concurrent per tenant. Measured at about 1.06 MiB of heap and three
+	// gateway goroutines per in-flight 1 MiB request, so 64 is roughly 68 MiB
+	// of body per tenant, and the worst case including the pricing peek and
+	// the response capture is about 3 MiB each.
+	if c.MaxInFlightPerTenant, err = getInt("MAX_INFLIGHT_PER_TENANT", 64); err != nil {
+		return c, err
+	}
+	// A queued request costs a parked goroutine and its connection, measured
+	// at about 62 KiB for a small request, so 128 of them is roughly 8 MiB:
+	// cheap enough to absorb a burst, small enough to refuse rather than
+	// hide a queue that is never going to drain.
+	if c.MaxQueuePerTenant, err = getInt("MAX_QUEUE_PER_TENANT", 128); err != nil {
+		return c, err
+	}
+	if c.QueueWait, err = getDuration("QUEUE_WAIT", time.Second); err != nil {
+		return c, err
+	}
+	// 60 s end to end. Measured, a route with retry_max=20 and a 200 ms
+	// timeout held a goroutine for 2.2 s; at a realistic 30 s route timeout
+	// the same row is ten minutes on one connection and one spend hold.
+	if c.MaxRequestDuration, err = getDuration("MAX_REQUEST_DURATION", 60*time.Second); err != nil {
+		return c, err
+	}
+	return c, nil
 }
 
 // parseIssuers reads OIDC_ISSUERS, a JSON array.

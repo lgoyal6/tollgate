@@ -192,6 +192,7 @@ func (g *Gateway) handler() http.Handler {
 		HedgingEnabled: g.cfg.HedgingEnabled,
 		MaxBodyBuffer:  g.cfg.MaxBodyBuffer,
 		MaxIdlePerHost: g.cfg.UpstreamMaxIdlePerHost,
+		Limits:         g.cfg.Limits,
 		Logger:         g.logger,
 		Metrics:        g.metrics,
 	})
