@@ -50,6 +50,12 @@ type Config struct {
 	// giving load balancers time to remove this replica before Shutdown.
 	DrainDelay time.Duration
 
+	// UsageSealInterval is how often a usage window is closed into the ledger
+	// and queued for the billing sink. Zero, the default, keeps the sealer off:
+	// a deployment with no downstream to bill should not accumulate messages
+	// nobody will ever relay.
+	UsageSealInterval time.Duration
+
 	// HedgingEnabled is the global gate; a route must also opt in.
 	HedgingEnabled bool
 	// MaxBodyBuffer caps how much of a request body is buffered to make it
@@ -170,6 +176,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DrainDelay, err = getDuration("DRAIN_DELAY", 0); err != nil {
+		return Config{}, err
+	}
+	if cfg.UsageSealInterval, err = getDuration("USAGE_SEAL_INTERVAL", 0); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxBodyBuffer, err = getInt64("MAX_BODY_BUFFER_BYTES", 1<<20); err != nil {

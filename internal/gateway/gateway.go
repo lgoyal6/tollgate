@@ -336,6 +336,14 @@ func (g *Gateway) Run(ctx context.Context) error {
 			errCh <- fmt.Errorf("main listener: %w", err)
 		}
 	}()
+	// Sealing is the gateway's half of the outbox: it closes a usage window and
+	// queues the charge in one transaction. Delivering that charge is a
+	// separate process (cmd/tollgate-outbox relay), which is what lets either
+	// side be killed without losing or double-billing a window.
+	if g.cfg.UsageSealInterval > 0 && g.store != nil {
+		go g.runUsageSealer(ctx, g.cfg.UsageSealInterval)
+		g.logger.Info("usage sealer started", "interval", g.cfg.UsageSealInterval)
+	}
 	go func() {
 		g.logger.Info("admin listening", "addr", g.cfg.AdminAddr)
 		if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
