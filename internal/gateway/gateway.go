@@ -208,6 +208,10 @@ func (g *Gateway) handler() http.Handler {
 		middleware.Tracing(g.cfg.ServiceName),
 		middleware.Auth(snapshots, g.metrics, g.tokens),
 		middleware.Router(snapshots),
+		// RequestSize is outside RateLimit because a declared Content-Length
+		// is free to check and the limiter's Redis round trip is not, so the
+		// cheapest rejection goes first.
+		middleware.RequestSize(g.cfg.Limits, g.metrics),
 	}
 	// LimiterBackend "none" leaves g.limiter nil: the RateLimit middleware is
 	// not in the chain at all, which is the honest floor when measuring what
@@ -215,6 +219,10 @@ func (g *Gateway) handler() http.Handler {
 	if g.limiter != nil {
 		mws = append(mws, middleware.RateLimit(g.limiter, g.cfg.RateLimitFailOpen, g.metrics, g.logger))
 	}
+	// Concurrency is inside RateLimit so a slot is never held across the
+	// limiter's round trip, and outside Budget so a queued or refused request
+	// never takes a spend hold.
+	mws = append(mws, middleware.Concurrency(g.cfg.Limits, g.metrics))
 	// Budget sits inside RateLimit and outside the proxy: a request refused on
 	// rate must not take a spend hold, and one refused on budget must not reach
 	// the upstream. Tenants with no budget row are unlimited, so adding this to

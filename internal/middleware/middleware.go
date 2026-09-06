@@ -1,12 +1,14 @@
 // Package middleware is the gateway's request pipeline. Order matters:
 //
 //	Recover -> CORS -> RequestID -> AccessLog -> Metrics -> Tracing
-//	        -> Auth -> Router -> RateLimit -> Budget -> proxy
+//	        -> Auth -> Router -> RequestSize -> RateLimit -> Concurrency
+//	        -> Budget -> proxy
 //
 // Auth runs before RateLimit because limits are per tenant, and the tenant
 // comes from the key. RateLimit runs before the proxy so rejected requests
-// never consume upstream capacity, and outside Budget so that nothing refused
-// on rate leaves a spend hold behind.
+// never consume upstream capacity. RequestSize, RateLimit and Concurrency all
+// run outside Budget so that nothing refused by an abuse limit leaves a spend
+// hold behind.
 package middleware
 
 import (

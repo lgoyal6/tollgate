@@ -244,6 +244,46 @@ Both are single Lua scripts (`internal/ratelimit/*.lua`) executed via `EVALSHA`:
 - **Graceful shutdown**: SIGTERM ⇒ readiness flips false ⇒ `DRAIN_DELAY` for endpoint propagation ⇒ `http.Server.Shutdown` waits for in-flight requests (bounded by `SHUTDOWN_TIMEOUT`) ⇒ flush traces, close pools. `terminationGracePeriodSeconds` is sized to fit the whole sequence.
 - Request bodies up to `MAX_BODY_BUFFER_BYTES` (1 MiB) are buffered so retries/hedges can replay them; larger or unknown-length bodies stream once with no re-send.
 
+## Abuse limits and backpressure
+
+A rate limit bounds how *often* a tenant calls. It says nothing about how big
+each call is, how many are still open, or how long any of them may run - and a
+gateway in front of a metered provider is judged on all three. Every number
+below was measured before it was picked (`TOLLGATE_MEASURE=1 go test
+./internal/middleware/ -run TestMeasure -v`), and every one is an environment
+variable where `0` means "not enforced":
+
+| bound | env | default | measured reason |
+| --- | --- | --- | --- |
+| request body, on the wire | `MAX_REQUEST_BYTES` | 8 MiB | a 256 MiB chunked upload was relayed in 154 ms at no cost to the gateway: unbounded free amplification into a paid upstream |
+| request body, decompressed | `MAX_DECOMPRESSED_BYTES` | 8 MiB | padded JSON gzips ~510:1, so a wire cap alone admits 4 GiB of expansion |
+| response body | `MAX_RESPONSE_BYTES` | 32 MiB | a 512 MiB response streamed through in 278 ms, all of it egress the gateway pays for and does not choose |
+| concurrent per tenant | `MAX_INFLIGHT_PER_TENANT` | 64 | ~1.06 MiB of heap and 3 gateway goroutines per open 1 MiB request; 512 of them cost 542 MiB with nothing refusing any |
+| queue depth per tenant | `MAX_QUEUE_PER_TENANT` | 128 | a parked request costs ~62 KiB, so a queue absorbs a burst cheaply - but an unbounded one only converts a retryable 429 into a timeout |
+| queue wait | `QUEUE_WAIT` | 1s | |
+| total request time | `MAX_REQUEST_DURATION` | 60s | `retry_max=20` at a 200 ms route timeout held a goroutine for 2.2 s; at a realistic 30 s timeout the same row is ten minutes |
+| retries | hard-coded | 5 attempts | `retry_max` is a Postgres column; 20 attempts tripped the per-host breaker every tenant on that upstream shares |
+
+Two properties are worth more than the numbers:
+
+- **Concurrency is capped per tenant, not globally.** A global cap lets one
+  caller's fan-out refuse everybody else's traffic, which is the starvation the
+  cap exists to prevent. A hostile tenant gets `429` with `Retry-After` while a
+  well-behaved one is served normally, and the tenant is served again the moment
+  it stops (`TestOverloadRejectsPredictablyAndRecovers`).
+- **Nothing refused by a limit touches the spend ledger.** `RequestSize`,
+  `RateLimit` and `Concurrency` all sit outside `Budget`, so a request rejected
+  for size or backpressure cannot leave a hold behind. That invariant is pinned
+  against a real PostgreSQL, not a fake
+  (`TestSizeRefusalLeavesNoSpendHold`).
+
+A compressed body is inflated for pricing only; the caller's compressed bytes
+still go upstream unchanged. Without that, `Content-Encoding: gzip` was a
+complete budget bypass: the estimator could not parse the body, so the request
+was forwarded with no hold at all. A `Content-Encoding` the gateway cannot
+inflate is refused with `415`, because a body whose size cannot be bounded is
+the bypass restated.
+
 ## Observability
 
 - **RED per tenant and route**: `tollgate_requests_total` / `tollgate_request_duration_seconds{tenant,route,method,code}` - label values come from operator-controlled config, never request data, so cardinality is bounded.
