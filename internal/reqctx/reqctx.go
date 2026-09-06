@@ -36,10 +36,15 @@ func (i *Info) RouteLabel() string {
 	return i.RoutePrefix
 }
 
-// TenantLabel returns the tenant for metrics, or "unauthenticated".
+// UnauthenticatedTenant is the label carried by requests that never resolved to
+// a tenant: health probes, unmatched paths, rejected keys. It is a metrics
+// bucket and not an account, so anything that bills a tenant has to exclude it.
+const UnauthenticatedTenant = "unauthenticated"
+
+// TenantLabel returns the tenant for metrics, or UnauthenticatedTenant.
 func (i *Info) TenantLabel() string {
 	if i.TenantID == "" {
-		return "unauthenticated"
+		return UnauthenticatedTenant
 	}
 	return i.TenantID
 }
