@@ -182,8 +182,13 @@ func Metrics(m *observability.Metrics) Middleware {
 			info := reqctx.InfoFrom(r.Context())
 			code := observability.CodeClass(sw.status)
 			tenant, route := info.TenantLabel(), info.RouteLabel()
-			m.RequestsTotal.WithLabelValues(tenant, route, r.Method, code).Inc()
-			m.RequestDuration.WithLabelValues(tenant, route, r.Method, code).
+			// Every label here has to come from a bounded set. Tenant and
+			// route come from Postgres and code is a class, but the method is
+			// whatever token the caller put on the request line, so it is
+			// clamped rather than passed through.
+			method := observability.MethodLabel(r.Method)
+			m.RequestsTotal.WithLabelValues(tenant, route, method, code).Inc()
+			m.RequestDuration.WithLabelValues(tenant, route, method, code).
 				Observe(time.Since(start).Seconds())
 		})
 	}
