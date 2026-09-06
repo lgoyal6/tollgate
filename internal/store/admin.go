@@ -2,14 +2,56 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // This file holds the write side of the store. Both the tollgate-admin CLI
 // and the HTTP management API call through here, so key issuance and policy
 // changes cannot drift between the two surfaces. Every statement fires the
 // tollgate_config NOTIFY trigger, so replicas hot-reload without a restart.
+
+// ValidationError is a rejection phrased entirely in terms of the caller's
+// own input and a documented constraint. It carries nothing about the
+// database, so an API in front of this package may repeat its message back to
+// a client verbatim; every other error this package returns may not, because
+// what a driver puts in an error string is table names, constraint names,
+// SQLSTATEs and the host it failed to reach.
+type ValidationError struct{ Msg string }
+
+func (e *ValidationError) Error() string { return e.Msg }
+
+// Invalid builds a ValidationError. Callers outside this package use it for
+// the same purpose: to mark a message as safe to show a client.
+func Invalid(format string, a ...any) error {
+	return &ValidationError{Msg: fmt.Sprintf(format, a...)}
+}
+
+// asClientError turns the two Postgres failures that are really caller
+// mistakes into messages a caller can act on, so that hiding driver text does
+// not also hide what went wrong. Anything else stays opaque on purpose.
+func asClientError(err error, unique, foreignKey string) error {
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return err
+	}
+	switch pg.Code {
+	case "23505": // unique_violation
+		return &ValidationError{Msg: unique}
+	case "23503": // foreign_key_violation
+		return &ValidationError{Msg: foreignKey}
+	case "22021":
+		// invalid byte sequence for encoding: a NUL inside a JSON string, say.
+		// Postgres is right to refuse it and the caller is the one who sent it,
+		// so this is a 400 rather than the gateway blaming itself.
+		return &ValidationError{Msg: "a value contains a byte the database cannot store"}
+	}
+	return err
+}
 
 // TenantSpec is the full rate limit policy for one tenant. Updates replace
 // the policy wholesale rather than patching single columns: the management UI
@@ -31,25 +73,25 @@ type TenantSpec struct {
 // anyway, so the API can answer 400 instead of surfacing a Postgres error.
 func (t TenantSpec) Validate() error {
 	if t.ID == "" {
-		return fmt.Errorf("tenant id is required")
+		return Invalid("tenant id is required")
 	}
 	if t.Name == "" {
-		return fmt.Errorf("tenant name is required")
+		return Invalid("tenant name is required")
 	}
 	if t.Algorithm != AlgoTokenBucket && t.Algorithm != AlgoSlidingWindow {
-		return fmt.Errorf("algorithm must be %q or %q, got %q", AlgoTokenBucket, AlgoSlidingWindow, t.Algorithm)
+		return Invalid("algorithm must be %q or %q, got %q", AlgoTokenBucket, AlgoSlidingWindow, t.Algorithm)
 	}
 	if t.Rate <= 0 {
-		return fmt.Errorf("rate must be > 0")
+		return Invalid("rate must be > 0")
 	}
 	if t.Burst <= 0 {
-		return fmt.Errorf("burst must be > 0")
+		return Invalid("burst must be > 0")
 	}
 	if t.Window <= 0 {
-		return fmt.Errorf("window must be > 0")
+		return Invalid("window must be > 0")
 	}
 	if t.Limit <= 0 {
-		return fmt.Errorf("limit must be > 0")
+		return Invalid("limit must be > 0")
 	}
 	return nil
 }
@@ -65,7 +107,8 @@ func (s *Store) CreateTenant(ctx context.Context, spec TenantSpec) error {
 		spec.ID, spec.Name, spec.Enabled, string(spec.Algorithm),
 		spec.Rate, spec.Burst, spec.Window.Milliseconds(), spec.Limit)
 	if err != nil {
-		return fmt.Errorf("inserting tenant %s: %w", spec.ID, err)
+		return asClientError(fmt.Errorf("inserting tenant %s: %w", spec.ID, err),
+			"a tenant with that id already exists", "no such tenant")
 	}
 	return nil
 }
@@ -114,22 +157,22 @@ type RouteSpec struct {
 // credential injection needs both a header and an env var to mean anything.
 func (r RouteSpec) Validate() error {
 	if r.TenantID == "" || r.PathPrefix == "" || r.Upstream == "" {
-		return fmt.Errorf("tenant, path prefix and upstream are required")
+		return Invalid("tenant, path prefix and upstream are required")
 	}
 	if r.PathPrefix[0] != '/' {
-		return fmt.Errorf("path prefix must start with /")
+		return Invalid("path prefix must start with /")
 	}
 	if r.Timeout <= 0 {
-		return fmt.Errorf("timeout must be > 0")
+		return Invalid("timeout must be > 0")
 	}
 	if r.RetryMax < 0 || r.RetryMax > 5 {
-		return fmt.Errorf("retries must be between 0 and 5")
+		return Invalid("retries must be between 0 and 5")
 	}
 	if r.HedgeDelay <= 0 {
-		return fmt.Errorf("hedge delay must be > 0")
+		return Invalid("hedge delay must be > 0")
 	}
 	if (r.UpstreamAuthHeader == "") != (r.UpstreamAuthEnv == "") {
-		return fmt.Errorf("upstream auth header and env must be set together")
+		return Invalid("upstream auth header and env must be set together")
 	}
 	return nil
 }
@@ -150,7 +193,8 @@ func (s *Store) AddRoute(ctx context.Context, spec RouteSpec) error {
 		spec.RetryMax, spec.HedgeEnabled, spec.HedgeDelay.Milliseconds(), spec.RequiredScope,
 		spec.UpstreamAuthHeader, spec.UpstreamAuthEnv, spec.UpstreamAuthPrefix)
 	if err != nil {
-		return fmt.Errorf("inserting route %s%s: %w", spec.TenantID, spec.PathPrefix, err)
+		return asClientError(fmt.Errorf("inserting route %s%s: %w", spec.TenantID, spec.PathPrefix, err),
+			"that route already exists", "no such tenant")
 	}
 	return nil
 }
@@ -178,7 +222,8 @@ func (s *Store) InsertKey(ctx context.Context, id, tenantID string, secretHash [
 		INSERT INTO api_keys (id, tenant_id, secret_hash, scopes) VALUES ($1, $2, $3, $4)`,
 		id, tenantID, secretHash, scopes)
 	if err != nil {
-		return fmt.Errorf("inserting key for %s: %w", tenantID, err)
+		return asClientError(fmt.Errorf("inserting key for %s: %w", tenantID, err),
+			"a key with that id already exists", "no such tenant")
 	}
 	return nil
 }
@@ -201,7 +246,13 @@ func (s *Store) RotateKey(ctx context.Context, oldID, newID string, newHash []by
 		WHERE id = $1 AND status = 'active'
 		RETURNING tenant_id, scopes`, oldID, grace).Scan(&tenant, &scopes)
 	if err != nil {
-		return "", fmt.Errorf("marking key %s for grace (is it active?): %w", oldID, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Deliberately one sentence for both "no such key" and "that key
+			// is already in grace or revoked": rotation must not be a way to
+			// ask which key ids exist.
+			return "", Invalid("no active key with that id")
+		}
+		return "", fmt.Errorf("marking key %s for grace: %w", oldID, err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO api_keys (id, tenant_id, secret_hash, scopes) VALUES ($1, $2, $3, $4)`,
