@@ -169,7 +169,8 @@ func Concurrency(cfg limits.Config, m *observability.Metrics) Middleware {
 				writeJSONError(w, info, http.StatusInternalServerError, "concurrency limit before auth")
 				return
 			}
-			g := gates.gateFor(tenant.ID)
+			g, releaseGate := gates.gateFor(tenant.ID)
+			defer releaseGate()
 			// The queue. A request that finds the tenant's slots full waits here,
 			// and that wait is indistinguishable from a slow upstream in every
 			// other signal the gateway emits: the access log records one duration,
@@ -210,38 +211,44 @@ func Concurrency(cfg limits.Config, m *observability.Metrics) Middleware {
 	}
 }
 
-// gateGroup holds one gate per tenant. Entries are never evicted: tenant ids
-// come from Postgres, so the key space is the operator's tenant list rather
-// than anything a caller can invent.
+// gateGroup holds one gate per tenant while that tenant has active or queued
+// requests. The last request removes the idle entry, so tenant deletion and
+// churn cannot leave a permanent process-wide allocation behind.
 type gateGroup struct {
 	cfg   limits.Config
 	mu    sync.RWMutex
 	gates map[string]*gate
 }
 
-func (gg *gateGroup) gateFor(tenantID string) *gate {
-	gg.mu.RLock()
-	g, ok := gg.gates[tenantID]
-	gg.mu.RUnlock()
-	if ok {
-		return g
-	}
+func (gg *gateGroup) gateFor(tenantID string) (*gate, func()) {
 	gg.mu.Lock()
-	defer gg.mu.Unlock()
-	if g, ok := gg.gates[tenantID]; ok {
-		return g
-	}
 	if gg.gates == nil {
 		gg.gates = make(map[string]*gate)
 	}
-	g = &gate{slots: make(chan struct{}, gg.cfg.MaxInFlightPerTenant)}
-	gg.gates[tenantID] = g
-	return g
+	g, ok := gg.gates[tenantID]
+	if !ok {
+		g = &gate{slots: make(chan struct{}, gg.cfg.MaxInFlightPerTenant)}
+		gg.gates[tenantID] = g
+	}
+	g.users++
+	gg.mu.Unlock()
+
+	return g, func() {
+		gg.mu.Lock()
+		defer gg.mu.Unlock()
+		g.users--
+		if g.users == 0 && gg.gates[tenantID] == g {
+			delete(gg.gates, tenantID)
+		}
+	}
 }
 
 type gate struct {
 	slots  chan struct{}
 	queued atomic.Int64
+	// users is guarded by gateGroup.mu. It includes requests waiting for a
+	// slot, holding one, or about to report a refusal.
+	users int
 }
 
 // acquire takes a slot, waits for one, or reports why it will not.
