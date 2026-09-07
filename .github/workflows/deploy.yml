@@ -260,6 +260,8 @@ jobs:
 
       - name: Verify allowed deployment work and denied lateral access
         shell: bash
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           set -euo pipefail
           active="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
@@ -292,11 +294,10 @@ jobs:
           grep -Eq 'PERMISSION_DENIED|Permission.*denied' /tmp/denied-secret
           echo "denied_runtime_secret=ok"
 
-          access_token="$(gcloud auth print-access-token)"
           token_info="$(curl -fsS --get https://oauth2.googleapis.com/tokeninfo \
-            --data-urlencode "access_token=${access_token}")"
+            --data-urlencode "access_token=${GCP_ACCESS_TOKEN}")"
           expires_in="$(jq -r '.expires_in | tonumber' <<<"$token_info")"
-          unset access_token token_info
+          unset token_info
           test "$expires_in" -gt 0
           test "$expires_in" -le 900
           echo "gcp_access_token_remaining_seconds=$expires_in"
