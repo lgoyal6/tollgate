@@ -306,7 +306,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE '(ya29\.|gh[opsu]_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- .; then
+          # The build-context test intentionally plants fake private-key headers
+          # to prove the image excludes them. Scan every other tracked file.
+          if git grep -nE '(ya29\.|gh[opsu]_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
+            -- . ':(exclude)scripts/check-build-context.sh'; then
             echo "credential-shaped material found in tracked files" >&2
             exit 1
           fi
