@@ -22,7 +22,7 @@ env:
 
 jobs:
   build-push-deploy:
-    if: ${{ !contains(github.ref_name, '-c10.') }}
+    if: ${{ !contains(github.ref_name, '-oidc-proof.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -201,16 +201,16 @@ jobs:
           echo "::notice title=Teardown required::Run deploy/terraform/aws/teardown.sh when verification is complete. The cluster bills continuously."
 
   verify-gcp-oidc:
-    if: ${{ contains(github.ref_name, '-c10.') }}
+    if: ${{ contains(github.ref_name, '-oidc-proof.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
     env:
-      GCP_PROJECT: gen-lang-client-0427846261
-      GCP_REGION: us-central1
-      GCP_REPOSITORY: c10r2-tollgate
-      GCP_DENIED_REPOSITORY: c10r2-other
-      GCP_RUNTIME_SECRET: c10r2-tollgate-upstream-key
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_REPOSITORY: ${{ vars.GCP_REPOSITORY }}
+      GCP_DENIED_REPOSITORY: ${{ vars.GCP_DENIED_REPOSITORY }}
+      GCP_RUNTIME_SECRET: ${{ vars.GCP_RUNTIME_SECRET }}
 
     steps:
       - name: Check out tagged source
@@ -222,6 +222,16 @@ jobs:
           WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
         run: |
           set -euo pipefail
+          for value in \
+            "$WORKLOAD_IDENTITY_PROVIDER" \
+            "$GCP_PROJECT" \
+            "$GCP_REGION" \
+            "$GCP_REPOSITORY" \
+            "$GCP_DENIED_REPOSITORY" \
+            "$GCP_RUNTIME_SECRET" \
+            "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}"; do
+            test -n "$value"
+          done
           response="$(curl -fsS \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://iam.googleapis.com/${WORKLOAD_IDENTITY_PROVIDER}")"
