@@ -232,10 +232,10 @@ if $dry_run; then
   run_step canary-probe probe-tagged-revision "$service" "$rollout_tag" "$probe_path"
 else
   service_json="$("${describe[@]}")"
-  canary_url="$(jq -r --arg tag "$rollout_tag" '.status.traffic[] | select(.tag == $tag) | .uri // empty' <<<"$service_json")"
+  canary_url="$(jq -r --arg tag "$rollout_tag" '.status.traffic[] | select(.tag == $tag) | (.url // .uri // empty)' <<<"$service_json")"
   [ -n "$canary_url" ] || { echo "rollout tag has no URL" >&2; false; }
   if [ "$app" = "argus" ]; then
-    token="$(gcloud auth print-identity-token --audiences="$canary_url")"
+    token="$(gcloud auth print-identity-token)"
     run_step canary-probe curl -fsS -o /dev/null -H "Authorization: Bearer $token" "${canary_url}${probe_path}"
   else
     status="$(curl -sS -o /dev/null -w '%{http_code}' "${canary_url}${probe_path}")"
@@ -253,7 +253,7 @@ if ! $dry_run; then
   service_url="$("${describe[@]}" | jq -r '.status.url // empty')"
   [ -n "$service_url" ] || { echo "service has no URL after canary shift" >&2; false; }
   if [ "$app" = "argus" ]; then
-    token="$(gcloud auth print-identity-token --audiences="$service_url")"
+    token="$(gcloud auth print-identity-token)"
     curl -fsS -H "Authorization: Bearer $token" "${service_url}${probe_path}" >/dev/null
   else
     status="$(curl -sS -o /dev/null -w '%{http_code}' "${service_url}${probe_path}")"
