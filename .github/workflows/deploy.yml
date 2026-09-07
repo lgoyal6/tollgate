@@ -22,6 +22,7 @@ env:
 
 jobs:
   build-push-deploy:
+    if: ${{ !contains(github.ref_name, '-c10.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -198,3 +199,115 @@ jobs:
           kubectl get deployment,statefulset,hpa,pod \
             -n "${KUBE_NAMESPACE}"
           echo "::notice title=Teardown required::Run deploy/terraform/aws/teardown.sh when verification is complete. The cluster bills continuously."
+
+  verify-gcp-oidc:
+    if: ${{ contains(github.ref_name, '-c10.') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      GCP_PROJECT: gen-lang-client-0427846261
+      GCP_REGION: us-central1
+      GCP_REPOSITORY: c10r2-tollgate
+      GCP_DENIED_REPOSITORY: c10r2-other
+      GCP_RUNTIME_SECRET: c10r2-tollgate-upstream-key
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Inspect the GitHub-issued OIDC claims
+        shell: bash
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://iam.googleapis.com/${WORKLOAD_IDENTITY_PROVIDER}")"
+          oidc_jwt="$(jq -r '.value' <<<"$response")"
+          OIDC_JWT="$oidc_jwt" python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          encoded = os.environ["OIDC_JWT"].split(".")[1]
+          payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+          fields = [
+              "iss", "aud", "sub", "repository", "repository_id",
+              "repository_owner_id", "ref", "ref_type", "environment",
+              "job_workflow_ref", "iat", "exp",
+          ]
+          print(json.dumps({field: payload.get(field) for field in fields}, sort_keys=True))
+          lifetime = int(payload["exp"]) - int(payload["iat"])
+          if lifetime <= 0 or lifetime > 600:
+              raise SystemExit(f"OIDC token lifetime {lifetime}s is not short-lived")
+          print(f"github_oidc_lifetime_seconds={lifetime}")
+          PY
+          unset oidc_jwt response OIDC_JWT
+
+      - name: Exchange GitHub OIDC for a bounded GCP deployment identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 900s
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Verify allowed deployment work and denied lateral access
+        shell: bash
+        run: |
+          set -euo pipefail
+          active="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
+          test "$active" = "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}"
+
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+          printf 'FROM scratch\nLABEL purpose=c10-oidc-proof\n' >"$probe_dir/Dockerfile"
+          image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${GCP_REPOSITORY}/oidc-proof:${GITHUB_RUN_ID}"
+          docker build -q -t "$image" "$probe_dir" >/dev/null
+          docker push "$image" >/dev/null
+          echo "allowed_repository_push=ok"
+
+          if gcloud artifacts docker images list \
+            "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${GCP_DENIED_REPOSITORY}" \
+            >/tmp/denied-repository 2>&1; then
+            echo "deployment identity unexpectedly read the denied repository" >&2
+            exit 1
+          fi
+          grep -Eq 'PERMISSION_DENIED|Permission.*denied' /tmp/denied-repository
+          echo "denied_other_repository=ok"
+
+          if gcloud secrets versions access latest \
+            --secret "$GCP_RUNTIME_SECRET" --project "$GCP_PROJECT" \
+            >/tmp/denied-secret 2>&1; then
+            echo "deployment identity unexpectedly read a runtime secret" >&2
+            exit 1
+          fi
+          grep -Eq 'PERMISSION_DENIED|Permission.*denied' /tmp/denied-secret
+          echo "denied_runtime_secret=ok"
+
+          access_token="$(gcloud auth print-access-token)"
+          token_info="$(curl -fsS --get https://oauth2.googleapis.com/tokeninfo \
+            --data-urlencode "access_token=${access_token}")"
+          expires_in="$(jq -r '.expires_in | tonumber' <<<"$token_info")"
+          unset access_token token_info
+          test "$expires_in" -gt 0
+          test "$expires_in" -le 900
+          echo "gcp_access_token_remaining_seconds=$expires_in"
+
+      - name: Check tracked files for credential material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '(ya29\.|gh[opsu]_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- .; then
+            echo "credential-shaped material found in tracked files" >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "tracked_credential_scan=clean"
