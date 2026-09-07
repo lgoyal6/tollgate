@@ -69,6 +69,7 @@ var allowed = map[string]string{
 	// must not be reused anywhere reachable.
 	"0473087e46dd3c6a9afe0c353bc48bf8a5478713da5a395937a9c6698b26a2ef": "docs/demo-setup.sh, the local development admin token",
 	"ddb31aefdbec46aa461f305507310c29ba359a4ec8fff7eb9c06f8cdd283ae9a": "internal/admin/admin_test.go, the admin token the unit tests construct a server with",
+	"f2c1af5755ae45f91241748f0f9cade6be8622befa5a8f82881a42c29ae926ef": "scripts/schemathesis.sh, the disposable local admin token for the ephemeral contract-test server",
 	// README prose showing the shape of a key, with the middle elided.
 	"a1a75e974fa516e430093f35402a500fb8fd97262d29dfaa07e7fb75a589bd78": "README.md, an elided key in a usage example",
 	// Connection strings for containers that exist only on a developer's
