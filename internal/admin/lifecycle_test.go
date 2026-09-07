@@ -11,17 +11,21 @@ package admin
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/lgoyal6/tollgate/internal/auth"
+	"github.com/lgoyal6/tollgate/internal/middleware"
+	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
 // liveGateway is the pair a real replica runs: a management handler writing to
 // Postgres, and the watcher-backed snapshot the request path authenticates
-// against. Nothing here reads the database per request, which is exactly why
-// the timing is worth a test.
+// against. The stale-snapshot timing remains worth testing even though the
+// protected-action boundary now performs a targeted lifecycle query.
 type liveGateway struct {
 	admin   http.Handler
 	watcher *store.Watcher
@@ -112,6 +116,112 @@ func TestRevocationBindsOnTheNextRequest(t *testing.T) {
 	// same process that just answered the revoke.
 	if err := g.verify(t, credential); err == nil {
 		t.Fatal("revoked credential still authenticates on the replica that performed the revocation; the 200 was a promise this gateway had not kept")
+	}
+}
+
+// TestRevocationBindsAcrossReplicas exercises both parts of distributed
+// invalidation. A second watcher receives the Postgres notification and drops
+// the key without a poll, while the database-backed execution-boundary check
+// closes the debounce window before that reload completes.
+func TestRevocationBindsAcrossReplicas(t *testing.T) {
+	const tenant = "lifecycle-two-replicas"
+	g := liveFixture(t, tenant)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	replicaStore, err := store.New(ctx, os.Getenv("TOLLGATE_TEST_POSTGRES"))
+	if err != nil {
+		t.Fatalf("connecting second replica: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		replicaStore.Close()
+	})
+	replica := store.NewWatcher(replicaStore, quietLogger(), 30*time.Second, 200*time.Millisecond)
+
+	code, body := do(t, g.admin, "POST", "/api/tenants",
+		`{"id":"`+tenant+`","name":"Lifecycle Two Replicas"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create tenant: got %d, want 201: %v", code, body)
+	}
+	keyID, credential := issueKey(t, g, tenant)
+	g.reload(t)
+	if err := replica.Load(ctx); err != nil {
+		t.Fatalf("initial second-replica load: %v", err)
+	}
+	if _, err := auth.Verify(replica.Snapshot(), credential, time.Now()); err != nil {
+		t.Fatalf("baseline authentication on second replica: %v", err)
+	}
+	hits := 0
+	metrics := observability.NewMetrics()
+	protected := middleware.Chain(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}),
+		middleware.RequestID(),
+		middleware.Auth(replica.Snapshot, metrics, nil),
+		middleware.CurrentAuthorization(replicaStore.CurrentAccess, metrics),
+	)
+	requestProtected := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+credential)
+		rec := httptest.NewRecorder()
+		protected.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := requestProtected(); code != http.StatusNoContent || hits != 1 {
+		t.Fatalf("second-replica baseline = status %d, protected hits %d; want 204, 1", code, hits)
+	}
+
+	go replica.Run(ctx)
+	// Establish that the second watcher is actually LISTENing before the revoke.
+	// Repeated no-op updates avoid a timing sleep and each raises the trigger.
+	beforeReady := replica.Reloads.Load()
+	deadline := time.Now().Add(3 * time.Second)
+	for replica.Reloads.Load() == beforeReady && time.Now().Before(deadline) {
+		if _, err := g.store.Pool.Exec(ctx, `UPDATE tenants SET updated_at = now() WHERE id = $1`, tenant); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if replica.Reloads.Load() == beforeReady {
+		t.Fatal("second replica did not process a Postgres notification")
+	}
+
+	beforeRevoke := replica.Reloads.Load()
+	code, body = do(t, g.admin, "DELETE", "/api/keys/"+keyID, "")
+	if code != http.StatusOK {
+		t.Fatalf("revoke: got %d, want 200: %v", code, body)
+	}
+
+	// The second snapshot is still stale during its debounce. The shared
+	// authority must nevertheless refuse the very next protected action.
+	if _, err := auth.Verify(replica.Snapshot(), credential, time.Now()); err != nil {
+		t.Fatalf("fixture missed the cross-replica stale window: %v", err)
+	}
+	if state, err := replicaStore.CurrentAccess(ctx, tenant, keyID, time.Now()); err != nil {
+		t.Fatal(err)
+	} else if state != store.AccessRevoked {
+		t.Fatalf("current access = %s, want revoked before notification reload", state)
+	}
+	if code := requestProtected(); code != http.StatusUnauthorized {
+		t.Fatalf("next protected HTTP action on stale replica = %d, want 401", code)
+	}
+	if hits != 1 {
+		t.Fatalf("revoked credential reached the protected action; hits = %d", hits)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for replica.Reloads.Load() == beforeRevoke && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if replica.Reloads.Load() == beforeRevoke {
+		t.Fatal("second replica did not reload after revocation notification")
+	}
+	if err := g.verify(t, credential); err == nil {
+		t.Fatal("admin replica still accepts revoked credential")
+	}
+	if _, err := auth.Verify(replica.Snapshot(), credential, time.Now()); err == nil {
+		t.Fatal("second replica still accepts revoked credential after notification reload")
 	}
 }
 
