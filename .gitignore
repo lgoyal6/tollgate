@@ -17,3 +17,4 @@ graphify-out/
 .env.*
 *.pem
 *.key
+.schemathesis/

@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # ------------------------------------------------------------------ build ---
-.PHONY: build test test-race test-integration cloud-run-rollout-test vet lint clean
+.PHONY: build test test-race test-integration schemathesis cloud-run-rollout-test vet lint clean
 
 build: ## Build all binaries into ./bin
 	go build -o bin/gateway ./cmd/gateway
@@ -17,6 +17,9 @@ test-race: ## Unit tests with the race detector
 
 test-integration: ## Integration tests (needs the compose stack: make up)
 	TOLLGATE_TEST_REDIS=localhost:6379 go test -count=1 ./internal/ratelimit/ -run TestRedis -v
+
+schemathesis: ## Generated OpenAPI checks against an isolated disposable Postgres
+	scripts/schemathesis.sh
 
 cloud-run-rollout-test: ## Validate Tollgate and Argus canary/rollback command plans
 	scripts/cloud-run-rollout_test.sh

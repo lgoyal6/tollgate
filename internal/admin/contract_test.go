@@ -354,8 +354,8 @@ func TestKeyOwnershipSurvivesRotation(t *testing.T) {
 
 	// Rotating an already-rotated key must not work: it is in grace, not
 	// active, so a second rotation would mint a key nobody asked for.
-	if code, body := do(t, h, "POST", "/api/keys/"+keyID+"/rotate", `{}`); code != http.StatusBadRequest {
-		t.Errorf("rotating a key already in grace: %d %v, want 400", code, body)
+	if code, body := do(t, h, "POST", "/api/keys/"+keyID+"/rotate", `{}`); code != http.StatusNotFound {
+		t.Errorf("rotating a key already in grace: %d %v, want 404", code, body)
 	}
 }
 
