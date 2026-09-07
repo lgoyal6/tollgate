@@ -2,7 +2,7 @@
 //
 //	Recover -> CORS -> RequestID -> AccessLog -> Metrics -> Tracing
 //	        -> Auth -> Router -> RequestSize -> RateLimit -> Concurrency
-//	        -> Budget -> proxy
+//	        -> CurrentAuthorization -> Budget -> proxy
 //
 // Auth runs before RateLimit because limits are per tenant, and the tenant
 // comes from the key. RateLimit runs before the proxy so rejected requests

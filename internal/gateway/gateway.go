@@ -223,6 +223,10 @@ func (g *Gateway) handler() http.Handler {
 	// limiter's round trip, and outside Budget so a queued or refused request
 	// never takes a spend hold.
 	mws = append(mws, middleware.Concurrency(g.cfg.Limits, g.metrics))
+	// Recheck mutable access after any queue wait. Snapshot authentication keeps
+	// the normal path cheap, while this targeted query makes a committed revoke
+	// or tenant disable bind on every replica before the protected action runs.
+	mws = append(mws, middleware.CurrentAuthorization(g.store.CurrentAccess, g.metrics))
 	// Budget sits inside RateLimit and outside the proxy: a request refused on
 	// rate must not take a spend hold, and one refused on budget must not reach
 	// the upstream. Tenants with no budget row are unlimited, so adding this to
