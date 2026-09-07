@@ -24,6 +24,25 @@ terraform -chdir=deploy/terraform/gcp-identity apply \
 `terraform output workload_identity_provider` is the value for
 `google-github-actions/auth`. It is a resource name, not a credential.
 
+The tag-triggered verification job reads only non-secret repository variables.
+After applying the stack, create the `production` GitHub environment and load
+the generated values:
+
+```bash
+gh api --method PUT repos/lgoyal6/tollgate/environments/production
+terraform -chdir=deploy/terraform/gcp-identity output -json github_actions_variables \
+  | jq -r 'to_entries[] | [.key, .value] | @tsv' \
+  | while IFS=$'\t' read -r key value; do
+      gh variable set "$key" --repo lgoyal6/tollgate --body "$value"
+    done
+git tag -a v0.1.0-oidc-proof.1 -m "Verify GCP OIDC"
+git push origin v0.1.0-oidc-proof.1
+```
+
+The job logs the bounded claims and lifetimes, pushes a scratch image to the
+allowed repository, proves the neighboring repository and runtime secret are
+denied, and checks tracked files for credential-shaped material.
+
 ## The trust policy
 
 ```
