@@ -347,6 +347,7 @@ The HPA consumes `tollgate_p99_latency_ms`, computed by prometheus-adapter as `h
 make test               # table-driven unit tests
 make test-race          # same, -race
 make test-integration   # Lua scripts against real Redis (needs `make up`)
+make schemathesis       # 300 boundary cases/operation plus bounded stateful sequences
 
 # Management API against a real Postgres:
 TOLLGATE_TEST_POSTGRES=postgres://tollgate:tollgate@localhost:5432/tollgate \
@@ -358,18 +359,15 @@ TOLLGATE_TEST_POSTGRES=postgres://tollgate:tollgate@localhost:5432/tollgate \
 - Management surface: every API route is asserted to answer 401 for a missing, wrong, wrong-scheme, empty and trailing-junk token, with a **nil store** behind it, so a leak past the gate would panic rather than pass quietly. The integration test walks the real flow against Postgres: issue, confirm the plaintext is never served again from any endpoint, add a credential-injecting route, rotate into a grace window, refuse to rotate the same key twice, revoke (200 then 404), and flip the kill switch.
 - Breaker: full state-machine walk (trip threshold, cooldown, probe budget, failure aging) on a fake clock. Hedge: winner/loser/cancellation semantics against live `httptest` servers. Proxy: forwarding, prefix strip, retry counts, 502/504 mapping, breaker integration, hedge wins. Auth: every rejection reason, plus a regression test for base64url secrets containing `_`.
 
-The management API contract test deliberately uses a native Go generated
-corpus instead of the plan's named Schemathesis runner. It runs the real
-`http.Handler` and Postgres-backed operations inside `go test`, crosses every
-registered operation with hostile body and path inputs, and checks status codes
-against `internal/admin/openapi.json`. This keeps endpoint discovery tied to the
-same operation table that mounts the routes and avoids booting a second service
-plus database solely for a Python runner. The substitution has a real limit:
-the current test validates declared statuses, JSON object/error shapes and
-selected success fields, but it does not evaluate every request and response
-property against the OpenAPI schemas or provide Schemathesis shrinking. Treat
-that schema-level validation as still open rather than describing this corpus
-as equivalent coverage.
+The management API has two independent generated checks. The native Go corpus
+keeps endpoint discovery tied to the operation table that mounts the routes and
+checks hostile body and path inputs during the ordinary suite. `make
+schemathesis` starts the real gateway over a socket with an isolated disposable
+Postgres container, then runs pinned Schemathesis coverage, fuzzing and stateful
+phases against all nine OpenAPI operations with complete response schemas. The
+native tests separately exercise every route with missing and malformed admin
+credentials. The database is destroyed after the run because the generated
+sequences create, rotate and delete API objects.
 
 ## Repository layout
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,19 +32,31 @@ func Invalid(format string, a ...any) error {
 	return &ValidationError{Msg: fmt.Sprintf(format, a...)}
 }
 
+// ConflictError marks a request that is valid in isolation but collides with
+// state that already exists. Keeping this distinct from ValidationError lets
+// HTTP callers tell a retryable create race from a malformed request without
+// exposing a database constraint name.
+type ConflictError struct{ Msg string }
+
+func (e *ConflictError) Error() string { return e.Msg }
+
+func Conflict(format string, a ...any) error {
+	return &ConflictError{Msg: fmt.Sprintf(format, a...)}
+}
+
 // asClientError turns the two Postgres failures that are really caller
 // mistakes into messages a caller can act on, so that hiding driver text does
 // not also hide what went wrong. Anything else stays opaque on purpose.
-func asClientError(err error, unique, foreignKey string) error {
+func asClientError(err error, unique, _ string) error {
 	var pg *pgconn.PgError
 	if !errors.As(err, &pg) {
 		return err
 	}
 	switch pg.Code {
 	case "23505": // unique_violation
-		return &ValidationError{Msg: unique}
+		return Conflict("%s", unique)
 	case "23503": // foreign_key_violation
-		return &ValidationError{Msg: foreignKey}
+		return ErrNotFound
 	case "22021":
 		// invalid byte sequence for encoding: a NUL inside a JSON string, say.
 		// Postgres is right to refuse it and the caller is the one who sent it,
@@ -77,6 +90,9 @@ func (t TenantSpec) Validate() error {
 	}
 	if t.Name == "" {
 		return Invalid("tenant name is required")
+	}
+	if strings.ContainsRune(t.ID, 0) || strings.ContainsRune(t.Name, 0) {
+		return Invalid("tenant id and name cannot contain NUL")
 	}
 	if t.Algorithm != AlgoTokenBucket && t.Algorithm != AlgoSlidingWindow {
 		return Invalid("algorithm must be %q or %q, got %q", AlgoTokenBucket, AlgoSlidingWindow, t.Algorithm)
@@ -162,6 +178,11 @@ func (r RouteSpec) Validate() error {
 	if r.PathPrefix[0] != '/' {
 		return Invalid("path prefix must start with /")
 	}
+	for _, value := range []string{r.PathPrefix, r.Upstream, r.RequiredScope, r.UpstreamAuthHeader, r.UpstreamAuthEnv, r.UpstreamAuthPrefix} {
+		if strings.ContainsRune(value, 0) {
+			return Invalid("route fields cannot contain NUL")
+		}
+	}
 	if r.Timeout <= 0 {
 		return Invalid("timeout must be > 0")
 	}
@@ -218,6 +239,11 @@ func (s *Store) InsertKey(ctx context.Context, id, tenantID string, secretHash [
 	if scopes == nil {
 		scopes = []string{}
 	}
+	for _, scope := range scopes {
+		if strings.ContainsRune(scope, 0) {
+			return Invalid("scopes cannot contain NUL")
+		}
+	}
 	_, err := s.Pool.Exec(ctx, `
 		INSERT INTO api_keys (id, tenant_id, secret_hash, scopes) VALUES ($1, $2, $3, $4)`,
 		id, tenantID, secretHash, scopes)
@@ -250,7 +276,7 @@ func (s *Store) RotateKey(ctx context.Context, oldID, newID string, newHash []by
 			// Deliberately one sentence for both "no such key" and "that key
 			// is already in grace or revoked": rotation must not be a way to
 			// ask which key ids exist.
-			return "", Invalid("no active key with that id")
+			return "", ErrNotFound
 		}
 		return "", fmt.Errorf("marking key %s for grace: %w", oldID, err)
 	}

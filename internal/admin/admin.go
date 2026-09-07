@@ -11,6 +11,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -290,6 +291,10 @@ func clientError(err error, code int) (int, string) {
 	if errors.Is(err, store.ErrNotFound) {
 		return http.StatusNotFound, "not found"
 	}
+	var conflict *store.ConflictError
+	if errors.As(err, &conflict) {
+		return http.StatusConflict, conflict.Error()
+	}
 	var invalid *store.ValidationError
 	if errors.As(err, &invalid) {
 		if code == 0 || code >= 500 {
@@ -390,7 +395,11 @@ func (s *Server) handleOverview(_ http.ResponseWriter, r *http.Request) (any, in
 }
 
 type tenantRequest struct {
-	ID        string  `json:"id"`
+	ID string `json:"id"`
+	tenantPolicyRequest
+}
+
+type tenantPolicyRequest struct {
 	Name      string  `json:"name"`
 	Enabled   *bool   `json:"enabled"`
 	Algorithm string  `json:"algorithm"`
@@ -400,7 +409,7 @@ type tenantRequest struct {
 	Limit     int64   `json:"limit"`
 }
 
-func (t tenantRequest) spec(id string) store.TenantSpec {
+func (t tenantPolicyRequest) spec(id string) store.TenantSpec {
 	enabled := true
 	if t.Enabled != nil {
 		enabled = *t.Enabled
@@ -453,7 +462,7 @@ func (s *Server) handleCreateTenant(_ http.ResponseWriter, r *http.Request) (any
 
 func (s *Server) handleUpdateTenant(_ http.ResponseWriter, r *http.Request) (any, int, error) {
 	id := r.PathValue("id")
-	var req tenantRequest
+	var req tenantPolicyRequest
 	if err := decode(r, &req); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
@@ -467,16 +476,20 @@ func (s *Server) handleUpdateTenant(_ http.ResponseWriter, r *http.Request) (any
 func (s *Server) handleIssueKey(_ http.ResponseWriter, r *http.Request) (any, int, error) {
 	tenant := r.PathValue("id")
 	var req struct {
-		Scopes []string `json:"scopes"`
+		Scopes []strictString `json:"scopes"`
 	}
 	if err := decodeOptional(r, &req); err != nil {
 		return nil, http.StatusBadRequest, err
+	}
+	scopes := make([]string, len(req.Scopes))
+	for i, scope := range req.Scopes {
+		scopes[i] = string(scope)
 	}
 	gen, err := auth.Generate()
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
-	if err := s.store.InsertKey(r.Context(), gen.ID, tenant, gen.SecretHash, req.Scopes); err != nil {
+	if err := s.store.InsertKey(r.Context(), gen.ID, tenant, gen.SecretHash, scopes); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 	s.logger.Info("admin issued key", "tenant", tenant, "key", gen.ID)
@@ -487,6 +500,23 @@ func (s *Server) handleIssueKey(_ http.ResponseWriter, r *http.Request) (any, in
 		"tenant": tenant,
 		"note":   "shown once, not recoverable",
 	}, http.StatusCreated, nil
+}
+
+// strictString prevents encoding/json's surprising null-to-empty-string
+// coercion inside arrays. The OpenAPI contract says scopes contain strings;
+// accepting [null] as [""] makes generated negative tests pass through.
+type strictString string
+
+func (s *strictString) UnmarshalJSON(raw []byte) error {
+	if string(raw) == "null" {
+		return errors.New("must be a string")
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	*s = strictString(value)
+	return nil
 }
 
 func (s *Server) handleAddRoute(_ http.ResponseWriter, r *http.Request) (any, int, error) {
@@ -531,9 +561,14 @@ func (s *Server) handleRotateKey(_ http.ResponseWriter, r *http.Request) (any, i
 	if err := decodeOptional(r, &req); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	grace := time.Duration(req.GraceSeconds) * time.Second
-	if grace <= 0 {
+	var grace time.Duration
+	switch {
+	case req.GraceSeconds <= 0:
 		grace = 24 * time.Hour
+	case req.GraceSeconds > 9223372036:
+		return nil, http.StatusBadRequest, store.Invalid("grace seconds exceed the supported duration")
+	default:
+		grace = time.Duration(req.GraceSeconds) * time.Second
 	}
 	gen, err := auth.Generate()
 	if err != nil {
@@ -582,26 +617,35 @@ func (s *Server) handleDeleteRoute(_ http.ResponseWriter, r *http.Request) (any,
 const maxBody = 64 << 10
 
 func decode(r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		// Safe to repeat: a JSON syntax or type error describes the body the
-		// caller just sent, in terms of the fields this API publishes.
-		return store.Invalid("parsing request body: %v", err)
-	}
-	return nil
+	return decodeJSON(r, dst, false)
 }
 
 // decodeOptional accepts an empty body, for endpoints where every field has a
 // default (issue a key with no scopes, rotate with the default grace).
 func decodeOptional(r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody))
+	return decodeJSON(r, dst, true)
+}
+
+func decodeJSON(r *http.Request, dst any, optional bool) error {
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+	if err != nil {
+		return store.Invalid("parsing request body: %v", err)
+	}
+	hadBytes := len(raw) > 0
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 && optional && !hadBytes {
+		return nil
+	}
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return store.Invalid("request body must be a JSON object")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
 		return store.Invalid("parsing request body: %v", err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return store.Invalid("request body must contain one JSON object")
 	}
 	return nil
 }

@@ -20,17 +20,224 @@
     "schemas": {
       "Error": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "error"
         ],
         "properties": {
           "error": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "Tenant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "algorithm",
+          "rate",
+          "burst",
+          "window_ms",
+          "limit",
+          "routes",
+          "active_keys"
+        ],
+        "properties": {
+          "id": {
             "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "algorithm": {
+            "type": "string",
+            "enum": [
+              "token_bucket",
+              "sliding_window"
+            ]
+          },
+          "rate": {
+            "type": "number"
+          },
+          "burst": {
+            "type": "integer"
+          },
+          "window_ms": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "routes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "active_keys": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Route": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tenant_id",
+          "path_prefix",
+          "upstream",
+          "strip_prefix",
+          "timeout_ms",
+          "retry_max",
+          "credential_set"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "path_prefix": {
+            "type": "string"
+          },
+          "upstream": {
+            "type": "string"
+          },
+          "strip_prefix": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "retry_max": {
+            "type": "integer"
+          },
+          "required_scope": {
+            "type": "string"
+          },
+          "credential_from": {
+            "type": "string"
+          },
+          "credential_set": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Key": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tenant_id",
+          "scopes",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "grace",
+              "revoked"
+            ]
+          },
+          "grace_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TenantCounters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requests",
+          "admitted",
+          "limited",
+          "server_errors"
+        ],
+        "properties": {
+          "requests": {
+            "type": "number"
+          },
+          "admitted": {
+            "type": "number"
+          },
+          "limited": {
+            "type": "number"
+          },
+          "server_errors": {
+            "type": "number"
+          }
+        }
+      },
+      "Overview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tenants",
+          "routes",
+          "keys",
+          "usage"
+        ],
+        "properties": {
+          "tenants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tenant"
+            }
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Route"
+            }
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Key"
+            },
+            "description": "Key identity and lifecycle only. secret_hash is never serialised here."
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TenantCounters"
+            }
           }
         }
       },
       "IssuedKey": {
         "type": "object",
+        "additionalProperties": false,
         "description": "The only response that carries a secret. The plaintext is returned once at issue time and is not recoverable afterwards; only its SHA-256 is stored.",
         "required": [
           "key_id",
@@ -40,57 +247,143 @@
         ],
         "properties": {
           "key_id": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tenant": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "RotatedKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key_id",
+          "key",
+          "tenant",
+          "replaced",
+          "grace_until",
+          "note"
+        ],
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tenant": {
+            "type": "string",
+            "minLength": 1
+          },
+          "replaced": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grace_until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreatedTenant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "tenant"
+        ],
+        "properties": {
+          "status": {
+            "const": "created"
+          },
+          "tenant": {
             "type": "string"
+          }
+        }
+      },
+      "UpdatedTenant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "tenant"
+        ],
+        "properties": {
+          "status": {
+            "const": "updated"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        }
+      },
+      "CreatedRoute": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "tenant",
+          "prefix"
+        ],
+        "properties": {
+          "status": {
+            "const": "created"
           },
           "tenant": {
             "type": "string"
           },
-          "replaced": {
-            "type": "string"
-          },
-          "grace_until": {
-            "type": "string"
-          },
-          "note": {
+          "prefix": {
             "type": "string"
           }
         }
       },
-      "Overview": {
+      "RevokedKey": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
-          "tenants",
-          "routes",
-          "keys",
-          "usage"
-        ],
-        "properties": {
-          "tenants": {
-            "type": "array"
-          },
-          "routes": {
-            "type": "array"
-          },
-          "keys": {
-            "type": "array",
-            "description": "Key identity and lifecycle only. secret_hash is never serialised here."
-          },
-          "usage": {
-            "type": "object"
-          }
-        }
-      },
-      "Status": {
-        "type": "object",
-        "required": [
-          "status"
+          "status",
+          "key_id"
         ],
         "properties": {
           "status": {
+            "const": "revoked"
+          },
+          "key_id": {
             "type": "string"
+          }
+        }
+      },
+      "DeletedRoute": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "route_id"
+        ],
+        "properties": {
+          "status": {
+            "const": "deleted"
+          },
+          "route_id": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       }
@@ -197,10 +490,15 @@
                 "properties": {
                   "id": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "name": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "enabled": {
                     "type": [
@@ -209,23 +507,46 @@
                     ]
                   },
                   "algorithm": {
-                    "type": "string",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "enum": [
                       "token_bucket",
-                      "sliding_window"
+                      "sliding_window",
+                      null
                     ]
                   },
                   "rate": {
-                    "type": "number"
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
                   },
                   "burst": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
                   },
                   "window_ms": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854
                   },
                   "limit": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
                   }
                 }
               }
@@ -238,7 +559,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/CreatedTenant"
                 }
               }
             }
@@ -282,6 +603,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "a tenant with that id already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -296,7 +627,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         ],
@@ -308,11 +640,12 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "id": {
-                    "type": "string"
-                  },
                   "name": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "enabled": {
                     "type": [
@@ -321,19 +654,46 @@
                     ]
                   },
                   "algorithm": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "token_bucket",
+                      "sliding_window",
+                      null
+                    ]
                   },
                   "rate": {
-                    "type": "number"
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
                   },
                   "burst": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
                   },
                   "window_ms": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854
                   },
                   "limit": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
                   }
                 }
               }
@@ -346,7 +706,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/UpdatedTenant"
                 }
               }
             }
@@ -414,7 +774,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         ],
@@ -427,9 +788,13 @@
                 "additionalProperties": false,
                 "properties": {
                   "scopes": {
-                    "type": "array",
+                    "type": [
+                      "array",
+                      "null"
+                    ],
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
                     }
                   }
                 }
@@ -487,6 +852,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "no such tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -501,7 +876,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         ],
@@ -519,37 +895,111 @@
                 "properties": {
                   "path_prefix": {
                     "type": "string",
-                    "pattern": "^/"
+                    "pattern": "^/[^\\u0000]*$",
+                    "minLength": 1
                   },
                   "upstream": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "strip_prefix": {
-                    "type": "boolean"
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
                   },
                   "timeout_ms": {
-                    "type": "integer"
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9223372036854
                   },
                   "retry_max": {
-                    "type": "integer",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
                     "minimum": 0,
                     "maximum": 5
                   },
                   "required_scope": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "auth_header": {
-                    "type": "string",
-                    "description": "Header the upstream credential is sent in."
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Header the upstream credential is sent in.",
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "auth_env": {
-                    "type": "string",
-                    "description": "NAME of the gateway environment variable holding the credential. The value never leaves the gateway process and is never stored."
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "NAME of the gateway environment variable holding the credential. The value never leaves the gateway process and is never stored.",
+                    "pattern": "^[^\\u0000]*$"
                   },
                   "auth_prefix": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[^\\u0000]*$"
                   }
-                }
+                },
+                "dependentRequired": {
+                  "auth_header": [
+                    "auth_env"
+                  ],
+                  "auth_env": [
+                    "auth_header"
+                  ]
+                },
+                "oneOf": [
+                  {
+                    "properties": {
+                      "auth_header": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "maxLength": 0
+                      },
+                      "auth_env": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "maxLength": 0
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "auth_header",
+                      "auth_env"
+                    ],
+                    "properties": {
+                      "auth_header": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "auth_env": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -560,7 +1010,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/CreatedRoute"
                 }
               }
             }
@@ -604,6 +1054,26 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "no such tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "that tenant already has the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -618,7 +1088,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         ],
@@ -631,8 +1102,13 @@
                 "additionalProperties": false,
                 "properties": {
                   "grace_seconds": {
-                    "type": "integer",
-                    "description": "Defaults to 86400 when absent or not positive."
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036,
+                    "description": "Defaults to 86400 when absent, null or not positive."
                   }
                 }
               }
@@ -645,7 +1121,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssuedKey"
+                  "$ref": "#/components/schemas/RotatedKey"
                 }
               }
             }
@@ -689,6 +1165,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "no active key with that id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -703,7 +1189,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         ],
@@ -713,7 +1200,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/RevokedKey"
                 }
               }
             }
@@ -782,7 +1269,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/DeletedRoute"
                 }
               }
             }
