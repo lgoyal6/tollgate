@@ -195,7 +195,7 @@ func (h HTTPSink) client() *http.Client {
 func (h HTTPSink) Deliver(ctx context.Context, m Message) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/v1/charges", bytes.NewReader(m.Payload))
 	if err != nil {
-		return "", err
+		return "", DeliveryRefused(err)
 	}
 	req.Header.Set("Idempotency-Key", m.IdempotencyKey)
 	req.Header.Set("X-Outbox-Topic", m.Topic)
@@ -206,7 +206,11 @@ func (h HTTPSink) Deliver(ctx context.Context, m Message) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("sink returned %s", resp.Status)
+		err := fmt.Errorf("sink returned %s", resp.Status)
+		if resp.StatusCode/100 == 4 {
+			return "", DeliveryRefused(err)
+		}
+		return "", err
 	}
 	var out ApplyResult
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

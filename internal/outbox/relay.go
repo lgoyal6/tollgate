@@ -26,6 +26,22 @@ type Sink interface {
 // behalf.
 var ErrNoLookup = errors.New("sink does not support lookup by idempotency key")
 
+// DeliveryRefusedError means the sink rejected a request before applying its
+// effect. Only this explicit classification is safe to retry. A generic error
+// may be a lost response after a successful commit and therefore becomes
+// UNKNOWN until reconciliation asks the sink what happened.
+type DeliveryRefusedError struct {
+	Cause error
+}
+
+func (e *DeliveryRefusedError) Error() string { return e.Cause.Error() }
+func (e *DeliveryRefusedError) Unwrap() error { return e.Cause }
+
+// DeliveryRefused marks an error as a confirmed refusal with no effect.
+func DeliveryRefused(cause error) error {
+	return &DeliveryRefusedError{Cause: cause}
+}
+
 // Relay moves messages out of the outbox. One Relay is one process's worth of
 // delivery; several may run at once, and the lease is what keeps them off each
 // other's rows.
@@ -63,6 +79,7 @@ type PassResult struct {
 	Expired   int // INFLIGHT rows whose owner is presumed dead, moved to UNKNOWN
 	Claimed   int
 	Delivered int
+	Unknown   int
 	Retrying  int
 	Failed    int
 }
@@ -92,6 +109,14 @@ func (r *Relay) Once(ctx context.Context) (PassResult, error) {
 		// database knows that yet.
 		r.Crash.at(CrashAfterSend)
 		if derr != nil {
+			var refused *DeliveryRefusedError
+			if !errors.As(derr, &refused) {
+				if err := r.recordUnknown(ctx, m.ID, derr); err != nil {
+					return res, err
+				}
+				res.Unknown++
+				continue
+			}
 			failed, err := r.recordFailure(ctx, m, derr)
 			if err != nil {
 				return res, err
@@ -109,6 +134,21 @@ func (r *Relay) Once(ctx context.Context) (PassResult, error) {
 		res.Delivered++
 	}
 	return res, nil
+}
+
+func (r *Relay) recordUnknown(ctx context.Context, id int64, cause error) error {
+	_, err := r.Pool.Exec(ctx, `
+		UPDATE outbox
+		   SET state = 'UNKNOWN',
+		       lease_owner = NULL,
+		       lease_expires_at = NULL,
+		       last_error = $2,
+		       updated_at = now()
+		 WHERE id = $1`, id, "delivery outcome unknown: "+cause.Error())
+	if err != nil {
+		return fmt.Errorf("recording ambiguous delivery of %d: %w", id, err)
+	}
+	return nil
 }
 
 // ExpireLeases moves INFLIGHT rows whose lease has run out to UNKNOWN.

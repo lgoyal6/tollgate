@@ -3,6 +3,8 @@ package outbox_test
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -57,6 +59,83 @@ func dbs(t *testing.T) (producer, consumer *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	return producer, consumer
+}
+
+// A successful consumer commit followed by a lost response is ambiguous. The
+// relay must stop at UNKNOWN until it can ask the consumer, because putting the
+// row back in PENDING would schedule an effect that may already have landed.
+func TestLostResponseAfterConsumerCommitBecomesUnknown(t *testing.T) {
+	ctx, producer, consumer, relay, original := harness(t)
+	original.Close()
+
+	w := window(8)
+	key := outbox.UsageKey(w.TenantID, w.WindowStart)
+	if _, err := outbox.SealWindows(ctx, producer, []outbox.Window{w}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &outbox.BillingSink{Pool: consumer, Dedupe: true}
+	lostResponse := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			sink.Handler().ServeHTTP(rw, req)
+			return
+		}
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if _, err := sink.Apply(req.Context(), req.Header.Get("Idempotency-Key"),
+			req.Header.Get("X-Outbox-Topic"), body); err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Return an empty 200. The effect is committed, but HTTPSink cannot
+		// decode a receipt and therefore observes a delivery error.
+	}))
+	defer lostResponse.Close()
+	relay.Sink = outbox.HTTPSink{BaseURL: lostResponse.URL}
+
+	res, err := relay.Once(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Unknown != 1 {
+		t.Fatalf("pass = %+v, want one ambiguous delivery", res)
+	}
+	if got := charges(t, consumer, key); got != 1 {
+		t.Fatalf("consumer effects = %d, want 1", got)
+	}
+	if s, _ := state(t, producer, key); s != outbox.StateUnknown {
+		t.Fatalf("state = %s, want UNKNOWN after the committed effect lost its response", s)
+	}
+}
+
+func TestExplicitConsumerRefusalRemainsRetryable(t *testing.T) {
+	ctx, producer, _, relay, original := harness(t)
+	original.Close()
+
+	w := window(9)
+	key := outbox.UsageKey(w.TenantID, w.WindowStart)
+	if _, err := outbox.SealWindows(ctx, producer, []outbox.Window{w}, nil); err != nil {
+		t.Fatal(err)
+	}
+	refusing := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		http.Error(rw, "refused before apply", http.StatusBadRequest)
+	}))
+	defer refusing.Close()
+	relay.Sink = outbox.HTTPSink{BaseURL: refusing.URL}
+
+	res, err := relay.Once(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Retrying != 1 || res.Unknown != 0 {
+		t.Fatalf("pass = %+v, want one explicit refusal scheduled for retry", res)
+	}
+	if s, _ := state(t, producer, key); s != outbox.StatePending {
+		t.Fatalf("state = %s, want PENDING after explicit refusal", s)
+	}
 }
 
 func window(n int) outbox.Window {
