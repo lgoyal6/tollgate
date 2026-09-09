@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
 	"github.com/lgoyal6/tollgate/internal/resilience"
+	"github.com/lgoyal6/tollgate/internal/secops"
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
@@ -182,6 +184,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.credentialFailure(route, info, "rejected", resp.StatusCode)
 	}
 
+	// A request that only succeeded because a backup attempt overtook a slow
+	// primary is the recovery half of a cascade, and it is the half that is
+	// invisible in a status code: the client saw 200 either way.
+	if info.Hedged && resp.StatusCode < 500 {
+		secops.From(r.Context()).Emit(r.Context(), secops.Event{
+			Type:     secops.EventUpstreamTimeoutCascade,
+			Control:  secops.ControlRequestHedge,
+			Outcome:  secops.OutcomeFellBack,
+			Attempt:  info.Attempts,
+			Hedged:   true,
+			Fallback: true,
+			Evidence: map[string]string{
+				"upstream_host":      route.Upstream.Host,
+				"fallback_mechanism": "hedge",
+				"upstream_status":    strconv.Itoa(resp.StatusCode),
+			},
+		})
+	}
+
 	info.Status = resp.StatusCode
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -238,6 +259,7 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 		if err != nil {
 			cancel()
 			lastErr = err
+			p.recordAttemptFailure(r, route, attempt+1, attempts, err)
 			if errors.Is(err, errBreakerOpen) || errors.Is(err, errCredentialMissing) || !canRepeat {
 				// Breaker open, or a credential that is not in the
 				// environment: more attempts would hit the same wall.
@@ -257,6 +279,40 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 		return resp, cancel, nil
 	}
 	return nil, nil, fmt.Errorf("all %d attempts failed: %w", attempts, lastErr)
+}
+
+// recordAttemptFailure records the two upstream failures that make up a
+// cascade: an attempt that ran out of time, and an attempt the breaker
+// refused to make.
+//
+// Everything else is left alone on purpose. A 502 from an upstream that
+// answered is that upstream's business and already in the RED metrics; the
+// two below are the ones that compound, because a timeout holds a
+// connection, a concurrency slot and a spend hold for its whole duration,
+// and a breaker refusal is the gateway declaring an upstream unusable for
+// every tenant sharing it.
+func (p *Proxy) recordAttemptFailure(r *http.Request, route *store.Route, attempt, allowed int, err error) {
+	var control string
+	var outcome secops.Outcome
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		control, outcome = secops.ControlRetryBudget, secops.OutcomeTimedOut
+	case errors.Is(err, errBreakerOpen):
+		control, outcome = secops.ControlCircuitBreaker, secops.OutcomeRejected
+	default:
+		return
+	}
+	secops.From(r.Context()).Emit(r.Context(), secops.Event{
+		Type:    secops.EventUpstreamTimeoutCascade,
+		Control: control,
+		Outcome: outcome,
+		Attempt: attempt,
+		Evidence: map[string]string{
+			"upstream_host":    route.Upstream.Host,
+			"attempts_allowed": strconv.Itoa(allowed),
+			"route_timeout_ms": strconv.FormatInt(route.Timeout.Milliseconds(), 10),
+		},
+	})
 }
 
 // doHedged races a primary against one delayed backup attempt.
