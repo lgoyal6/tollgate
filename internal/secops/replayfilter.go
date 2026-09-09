@@ -42,7 +42,6 @@ type ReplayFilter struct {
 
 type sighting struct {
 	peer      string
-	at        time.Time
 	expiresAt time.Time
 }
 
@@ -75,7 +74,6 @@ func TokenID(jti, raw string) string {
 type replaySighting struct {
 	replayed  bool
 	firstPeer string
-	firstAt   time.Time
 }
 
 // note records a presentation and reports whether it was a replay from a
@@ -90,11 +88,11 @@ func (f *ReplayFilter) note(tokenID, peer string, expiresAt, now time.Time) repl
 			// Deliberately not overwritten: the first peer is the one worth
 			// keeping, because it is the answer to "who was this token
 			// issued to" when a third peer shows up later.
-			return replaySighting{replayed: true, firstPeer: prior.peer, firstAt: prior.at}
+			return replaySighting{replayed: true, firstPeer: prior.peer}
 		}
 		return replaySighting{}
 	}
-	f.insert(tokenID, sighting{peer: peer, at: now, expiresAt: expiresAt})
+	f.insert(tokenID, sighting{peer: peer, expiresAt: expiresAt})
 	return replaySighting{}
 }
 
@@ -157,19 +155,23 @@ func (r *Recorder) NoteTokenUse(ctx context.Context, tokenID, peer string, expir
 	// reached here passed certificate binding, so the replay came from a peer
 	// holding the right key; an unbound one was admitted because the issuer
 	// never constrained it.
-	evidence := map[string]string{
-		"token_id":                     tokenID,
-		"peer":                         peer,
-		"first_seen_peer":              s.firstPeer,
-		"first_seen_at":                s.firstAt.UTC().Format(time.RFC3339Nano),
-		"certificate_bound":            boolText(boundToCert),
-		"rejected_by_existing_control": boolText(false),
-	}
+	//
+	// No wall-clock detail in the evidence: the timeline is compared byte for
+	// byte across two runs to prove the replay is deterministic, and a
+	// timestamp inside an evidence value would make every run differ. The
+	// pointer back to the original presentation is first_seen_peer, which is
+	// what an operator greps the timeline for anyway.
 	r.Emit(ctx, Event{
-		Type:     EventTokenReplay,
-		Control:  ControlTokenReplayFilter,
-		Outcome:  OutcomeAllowed,
-		Evidence: evidence,
+		Type:    EventTokenReplay,
+		Control: ControlTokenReplayFilter,
+		Outcome: OutcomeAllowed,
+		Evidence: map[string]string{
+			"token_id":          tokenID,
+			"peer":              peer,
+			"first_seen_peer":   s.firstPeer,
+			"certificate_bound": boolText(boundToCert),
+			"refused":           boolText(false),
+		},
 	})
 }
 
