@@ -66,7 +66,10 @@ type Recorder struct {
 func NewRecorder(opts Options) *Recorder {
 	r := &Recorder{sinks: opts.Sinks, now: opts.Now}
 	if r.now == nil {
-		r.now = time.Now
+		// UTC, not local. These timestamps end up in a committed artifact and
+		// in logs correlated against other hosts' logs, and a local offset in
+		// either is one more thing to get wrong at three in the morning.
+		r.now = func() time.Time { return time.Now().UTC() }
 	}
 	r.counter = opts.Counter
 	if r.counter == nil {
