@@ -58,6 +58,19 @@ func summarize(r *replay.Report, out string) {
 		fmt.Printf("%-28s %-9v %-9d %-8d %v\n",
 			s.Key, s.Detected, s.DetectionDelayMS, s.AffectedTenantCount, s.LinkageComplete)
 	}
+	// Machine-readable markers, so scripts/run-security-ops-eval.sh can check
+	// WHICH scenario the negative control broke rather than only that the run
+	// failed. A run that failed for an unrelated reason would otherwise look
+	// like a caught fault.
+	for _, s := range r.Scenarios {
+		if !s.Detected {
+			fmt.Printf("undetected: %s\n", s.Key)
+		}
+		if !s.LinkageComplete {
+			fmt.Printf("incomplete-linkage: %s\n", s.Key)
+		}
+	}
+
 	fmt.Printf("\nbenign replay: %d requests, %d events, %d alerts\n",
 		r.BenignReplay.RequestsSent, r.BenignReplay.EventsObserved, r.BenignReplay.Alerts)
 	fmt.Printf("determinism over %d runs: identical=%v\n", r.Determinism.Runs, r.Determinism.Identical)
