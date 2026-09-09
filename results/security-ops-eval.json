@@ -1,0 +1,789 @@
+{
+  "generated_by": "cmd/tollgate-secops-replay",
+  "manifest": {
+    "path": "secops/manifest.json",
+    "sha256": "9f675c4a84a1a0429082d67feee77411351f4a53d5875fc0347f1086ccb2da24",
+    "manifest_version": 1,
+    "frozen_at": "2026-09-09"
+  },
+  "evidence_boundary": {
+    "runs_on": "one local host, in a single Go process",
+    "traffic": "synthetic scripted replay driven through the real middleware chain in process (httptest upstreams, in-memory config snapshot, in-memory rate limiter, in-memory spend ledger)",
+    "not_claimed": [
+      "no SOC, no on-call rotation, no paging",
+      "no customer or production traffic",
+      "no incident history: every incident in the results is one this harness caused on purpose, seconds earlier",
+      "no prevention claim: this lane is detection only, and where a request was refused it was refused by a control that already existed",
+      "no distributed claim: one process, one host, no Redis and no Postgres"
+    ]
+  },
+  "harness": {
+    "middleware_chain": "Recover, secops.Observe, RequestID, Metrics, Tracing, Auth, Router, RequestSize, RateLimit, Concurrency, Budget, proxy",
+    "middleware_omitted": "CurrentAuthorization: it is a targeted Postgres query and these commands run with no database",
+    "breaker_min_requests": 6,
+    "breaker_cooldown_ms": 250,
+    "burst_tenant_policy": "sliding window log, 6 requests per 250ms, identical in both legs",
+    "tracing": "OpenTelemetry SDK tracer with no exporter: real span contexts, nothing leaves the process",
+    "storage": "in-memory config snapshot, in-memory rate limiter, in-memory budget ledger, httptest upstreams"
+  },
+  "scenarios": [
+    {
+      "scenario": "stolen_token_replay",
+      "ordinal": 1,
+      "title": "stolen-token replay: a valid token presented again from a different peer identity",
+      "detected": true,
+      "detection_delay_ms": 0,
+      "affected_tenants": [
+        "replay-co"
+      ],
+      "affected_tenant_count": 1,
+      "failed_control": "rfc8705_certificate_binding",
+      "control_outcome": "allowed",
+      "control_held": false,
+      "recovery_action": "revoke key",
+      "evidence_event_ids": [
+        1,
+        2
+      ],
+      "evidence_trace_ids": [
+        "1866dae9c56472d42e86b2827409a09c",
+        "f76ed9a7e00b568ca39f8c69ed698ede"
+      ],
+      "linkage_complete": true,
+      "events_observed": 2,
+      "requests_sent": 3,
+      "response_statuses": [
+        200,
+        200,
+        200
+      ],
+      "notes": [
+        "three presentations of one unbound token",
+        "presentations two and three come from a different client certificate"
+      ],
+      "incidents": [
+        {
+          "incident_id": "stolen_token_replay#1",
+          "scenario": "stolen_token_replay",
+          "group_key": "replay-co",
+          "first_event_id": 1,
+          "first_event_at": "2026-09-09T22:46:33.535897Z",
+          "detection_time": "2026-09-09T22:46:33.535897Z",
+          "detection_event_id": 1,
+          "detection_delay_ms": 0,
+          "affected_tenants": [
+            "replay-co"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "rfc8705_certificate_binding",
+          "control_outcome": "allowed",
+          "recovery_action": "revoke key",
+          "evidence_event_ids": [
+            1,
+            2
+          ],
+          "evidence_trace_ids": [
+            "1866dae9c56472d42e86b2827409a09c",
+            "f76ed9a7e00b568ca39f8c69ed698ede"
+          ],
+          "evidence_event_types": [
+            "token_replay"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    },
+    {
+      "scenario": "cert_binding_mismatch",
+      "ordinal": 2,
+      "title": "certificate-bound token presented with the wrong client certificate",
+      "detected": true,
+      "detection_delay_ms": 0,
+      "affected_tenants": [
+        "unauthenticated"
+      ],
+      "affected_tenant_count": 1,
+      "failed_control": "client_certificate_possession",
+      "control_outcome": "rejected",
+      "control_held": true,
+      "recovery_action": "rotate key",
+      "evidence_event_ids": [
+        3,
+        4
+      ],
+      "evidence_trace_ids": [
+        "8cb81d944938b4225c2604776881ad07",
+        "94d5d03ca2864e9288952549f7e01c98"
+      ],
+      "linkage_complete": true,
+      "events_observed": 2,
+      "requests_sent": 2,
+      "response_statuses": [
+        401,
+        401
+      ],
+      "notes": [
+        "two presentations of a token the issuer bound to one certificate",
+        "presented with a different certificate, which the binding control refuses"
+      ],
+      "incidents": [
+        {
+          "incident_id": "cert_binding_mismatch#1",
+          "scenario": "cert_binding_mismatch",
+          "group_key": "unauthenticated",
+          "first_event_id": 3,
+          "first_event_at": "2026-09-09T22:46:33.537451Z",
+          "detection_time": "2026-09-09T22:46:33.537451Z",
+          "detection_event_id": 3,
+          "detection_delay_ms": 0,
+          "affected_tenants": [
+            "unauthenticated"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "client_certificate_possession",
+          "control_outcome": "rejected",
+          "recovery_action": "rotate key",
+          "evidence_event_ids": [
+            3,
+            4
+          ],
+          "evidence_trace_ids": [
+            "8cb81d944938b4225c2604776881ad07",
+            "94d5d03ca2864e9288952549f7e01c98"
+          ],
+          "evidence_event_types": [
+            "cert_mismatch"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    },
+    {
+      "scenario": "provider_key_anomaly",
+      "ordinal": 3,
+      "title": "rotated key still in its grace window, used far above baseline with a spend spike",
+      "detected": true,
+      "detection_delay_ms": 4,
+      "affected_tenants": [
+        "spend-co"
+      ],
+      "affected_tenant_count": 1,
+      "failed_control": "api_key_rotation_grace",
+      "control_outcome": "allowed",
+      "control_held": false,
+      "recovery_action": "revoke key",
+      "evidence_event_ids": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+      ],
+      "evidence_trace_ids": [
+        "06f7270097d84dee072c37377f4a71ce",
+        "3415f54bdde27b46601d795096e4b7ae",
+        "3d4ae939117698785f3f052faf286581",
+        "6dcbcac15bbd4a367b1c28813dbaa91e",
+        "85ff3d64e9fc9c86bea0a3a6ba66a58e",
+        "8c1b863a0b95f689b94046c4b250788d",
+        "8eaef145450b7a864c779563451f4964",
+        "9056057f5ed5a6a290d42b57aa87f027",
+        "91930d4331d2ada52ef82cee45fbb550",
+        "97f1a47d65f6558f86b9af4de59e31e8",
+        "9fbb753b7c87ecff899f3623bc11dbb8",
+        "acaad357276e10019910547bac2da49b",
+        "ae15d6df9af0e6a1ccc030e7683de39b",
+        "b7acda560298bcc15880d8690c0b8101",
+        "be398de2069db027f106fd213f770044",
+        "d2b557e534a465372c387d9afca08e7c",
+        "e4ccbfdb9fd0db3542c909c1b8d8003d",
+        "e57c9838029b4fd50fdb3ca95aee2709",
+        "ecf17dffdafda1a43f15fa1518bf70f6",
+        "f2b5d32c56344ff49d9f5185ea4ba391"
+      ],
+      "linkage_complete": true,
+      "events_observed": 21,
+      "requests_sent": 20,
+      "response_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "notes": [
+        "twenty requests on the same rotated key still inside its grace window",
+        "the provider reports 20k in and 30k out per request: 510,000 micros each"
+      ],
+      "incidents": [
+        {
+          "incident_id": "provider_key_anomaly#1",
+          "scenario": "provider_key_anomaly",
+          "group_key": "spend-co",
+          "first_event_id": 5,
+          "first_event_at": "2026-09-09T22:46:33.537529Z",
+          "detection_time": "2026-09-09T22:46:33.54163Z",
+          "detection_event_id": 15,
+          "detection_delay_ms": 4,
+          "affected_tenants": [
+            "spend-co"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "api_key_rotation_grace",
+          "control_outcome": "allowed",
+          "recovery_action": "revoke key",
+          "evidence_event_ids": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ],
+          "evidence_trace_ids": [
+            "06f7270097d84dee072c37377f4a71ce",
+            "3415f54bdde27b46601d795096e4b7ae",
+            "3d4ae939117698785f3f052faf286581",
+            "6dcbcac15bbd4a367b1c28813dbaa91e",
+            "85ff3d64e9fc9c86bea0a3a6ba66a58e",
+            "8c1b863a0b95f689b94046c4b250788d",
+            "8eaef145450b7a864c779563451f4964",
+            "9056057f5ed5a6a290d42b57aa87f027",
+            "91930d4331d2ada52ef82cee45fbb550",
+            "97f1a47d65f6558f86b9af4de59e31e8",
+            "9fbb753b7c87ecff899f3623bc11dbb8",
+            "acaad357276e10019910547bac2da49b",
+            "ae15d6df9af0e6a1ccc030e7683de39b",
+            "b7acda560298bcc15880d8690c0b8101",
+            "be398de2069db027f106fd213f770044",
+            "d2b557e534a465372c387d9afca08e7c",
+            "e4ccbfdb9fd0db3542c909c1b8d8003d",
+            "e57c9838029b4fd50fdb3ca95aee2709",
+            "ecf17dffdafda1a43f15fa1518bf70f6",
+            "f2b5d32c56344ff49d9f5185ea4ba391"
+          ],
+          "evidence_event_types": [
+            "key_rotation",
+            "provider_anomaly"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    },
+    {
+      "scenario": "ssrf_metadata_attempt",
+      "ordinal": 4,
+      "title": "a route whose upstream is a cloud instance metadata endpoint",
+      "detected": true,
+      "detection_delay_ms": 0,
+      "affected_tenants": [
+        "meta-co"
+      ],
+      "affected_tenant_count": 1,
+      "failed_control": "upstream_metadata_allowlist",
+      "control_outcome": "rejected",
+      "control_held": true,
+      "recovery_action": "reject route",
+      "evidence_event_ids": [
+        26,
+        27
+      ],
+      "evidence_trace_ids": [
+        "099ba01147905505d3b2116a6ffdbe7d",
+        "de3ac85bd80c8d4309216e18f41edde6"
+      ],
+      "linkage_complete": true,
+      "events_observed": 2,
+      "requests_sent": 2,
+      "response_statuses": [
+        502,
+        502
+      ],
+      "notes": [
+        "two requests on a route whose upstream is 169.254.169.254"
+      ],
+      "incidents": [
+        {
+          "incident_id": "ssrf_metadata_attempt#1",
+          "scenario": "ssrf_metadata_attempt",
+          "group_key": "meta-co",
+          "first_event_id": 26,
+          "first_event_at": "2026-09-09T22:46:33.545099Z",
+          "detection_time": "2026-09-09T22:46:33.545099Z",
+          "detection_event_id": 26,
+          "detection_delay_ms": 0,
+          "affected_tenants": [
+            "meta-co"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "upstream_metadata_allowlist",
+          "control_outcome": "rejected",
+          "recovery_action": "reject route",
+          "evidence_event_ids": [
+            26,
+            27
+          ],
+          "evidence_trace_ids": [
+            "099ba01147905505d3b2116a6ffdbe7d",
+            "de3ac85bd80c8d4309216e18f41edde6"
+          ],
+          "evidence_event_types": [
+            "ssrf_rejected"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    },
+    {
+      "scenario": "auth_rate_burst",
+      "ordinal": 5,
+      "title": "a burst of rejected credentials and limiter refusals in a short window",
+      "detected": true,
+      "detection_delay_ms": 0,
+      "affected_tenants": [
+        "unauthenticated"
+      ],
+      "affected_tenant_count": 1,
+      "failed_control": "tenant_admission_control",
+      "control_outcome": "rejected",
+      "control_held": true,
+      "recovery_action": "disable tenant",
+      "evidence_event_ids": [
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
+      ],
+      "evidence_trace_ids": [
+        "23d50673dc074adb13fc1841e69faf87",
+        "3e5c76b234f99e2d7db9985231a9253c",
+        "4491ac3446cf95751d0f7cacd27a83ec",
+        "4972b8072900d8f6eb31086f8417980d",
+        "559d6e655d613d2e9b8e14658b8ba989",
+        "59a74bfe3027992b055863e66c7b935b",
+        "6199b92ead745209b43ae1d58b55305e",
+        "985cc4e858b927d6fed9524b8f622b10",
+        "a1befcd71f880ebd5370af45f80b1ace",
+        "d0073d48ce28811b51f7d3403b3658fe",
+        "e7c8bfe0b253afb7e44dc3c4bedcc7d6",
+        "fed0e56590d79985a141cd90152ff9d2"
+      ],
+      "linkage_complete": true,
+      "events_observed": 26,
+      "requests_sent": 32,
+      "response_statuses": [
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        401,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429,
+        429
+      ],
+      "notes": [
+        "twelve credential presentations then twenty requests, on one tenant",
+        "the twelve carry a real key id with somebody else's secret, and the twenty arrive inside one limiter window"
+      ],
+      "incidents": [
+        {
+          "incident_id": "auth_rate_burst#1",
+          "scenario": "auth_rate_burst",
+          "group_key": "unauthenticated",
+          "first_event_id": 28,
+          "first_event_at": "2026-09-09T22:46:33.545154Z",
+          "detection_time": "2026-09-09T22:46:33.545272Z",
+          "detection_event_id": 37,
+          "detection_delay_ms": 0,
+          "affected_tenants": [
+            "unauthenticated"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "tenant_admission_control",
+          "control_outcome": "rejected",
+          "recovery_action": "disable tenant",
+          "evidence_event_ids": [
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39
+          ],
+          "evidence_trace_ids": [
+            "23d50673dc074adb13fc1841e69faf87",
+            "3e5c76b234f99e2d7db9985231a9253c",
+            "4491ac3446cf95751d0f7cacd27a83ec",
+            "4972b8072900d8f6eb31086f8417980d",
+            "559d6e655d613d2e9b8e14658b8ba989",
+            "59a74bfe3027992b055863e66c7b935b",
+            "6199b92ead745209b43ae1d58b55305e",
+            "985cc4e858b927d6fed9524b8f622b10",
+            "a1befcd71f880ebd5370af45f80b1ace",
+            "d0073d48ce28811b51f7d3403b3658fe",
+            "e7c8bfe0b253afb7e44dc3c4bedcc7d6",
+            "fed0e56590d79985a141cd90152ff9d2"
+          ],
+          "evidence_event_types": [
+            "auth_rejected"
+          ],
+          "linkage_complete": true
+        },
+        {
+          "incident_id": "auth_rate_burst#2",
+          "scenario": "auth_rate_burst",
+          "group_key": "burst-co",
+          "first_event_id": 40,
+          "first_event_at": "2026-09-09T22:46:33.546182Z",
+          "detection_time": "2026-09-09T22:46:33.546527Z",
+          "detection_event_id": 49,
+          "detection_delay_ms": 0,
+          "affected_tenants": [
+            "burst-co"
+          ],
+          "affected_tenant_count": 1,
+          "failed_control": "tenant_admission_control",
+          "control_outcome": "rejected",
+          "recovery_action": "disable tenant",
+          "evidence_event_ids": [
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53
+          ],
+          "evidence_trace_ids": [
+            "01eb188429cdfe3e10c469bd889f89c9",
+            "0855f57175fc76bbc6ba76224951982f",
+            "1965772e70234a04a2d77bc1f2c09959",
+            "199e57375d3f4aedf90270350d2d26e2",
+            "333c67bffea5837ca245ce3356d24322",
+            "5e636fad14eb4b2df3734431be8b00e3",
+            "7ca498f988a96a3eb009ce02b8cab023",
+            "88f27adb36c6592f6b84b4de719c42cf",
+            "98cc0d5a409bced7a5b892f2c2ad9405",
+            "a83594022e96bf4e4507dba4e3c78c34",
+            "b81eef381d888ec625717811e521d73f",
+            "dc16413d552cf530e5bd48de671a46a8",
+            "e674c60ae719c3ae1cfbe4f4b459526a",
+            "f0d74c81541705f5fc8d41f7015044a0"
+          ],
+          "evidence_event_types": [
+            "rate_burst"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    },
+    {
+      "scenario": "upstream_timeout_cascade",
+      "ordinal": 6,
+      "title": "slow upstream, repeated timeouts, breaker opens, and a hedge carries the last request",
+      "detected": true,
+      "detection_delay_ms": 823,
+      "affected_tenants": [
+        "cascade-a",
+        "cascade-b"
+      ],
+      "affected_tenant_count": 2,
+      "failed_control": "upstream_availability",
+      "control_outcome": "fell_back",
+      "control_held": false,
+      "recovery_action": "open breaker and fall back",
+      "evidence_event_ids": [
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62
+      ],
+      "evidence_trace_ids": [
+        "945298ae996d32b849c469cbfa2d5890",
+        "dd0b3de49b118dacbd0c0314fd538d96",
+        "e89de81a6571422ca2e952180acba480",
+        "f6e471a9d631a883530b8aa28d7b91e8"
+      ],
+      "linkage_complete": true,
+      "events_observed": 9,
+      "requests_sent": 7,
+      "response_statuses": [
+        504,
+        503,
+        503,
+        200,
+        200,
+        200,
+        200
+      ],
+      "notes": [
+        "seven requests from two tenants to one upstream host, on the same routes in both legs",
+        "the upstream never answers, so attempts time out, the shared breaker opens on both tenants, and the last request is carried by a hedge"
+      ],
+      "incidents": [
+        {
+          "incident_id": "upstream_timeout_cascade#1",
+          "scenario": "upstream_timeout_cascade",
+          "group_key": "127.0.0.1:52970",
+          "first_event_id": 54,
+          "first_event_at": "2026-09-09T22:46:33.588943Z",
+          "detection_time": "2026-09-09T22:46:34.412013Z",
+          "detection_event_id": 62,
+          "detection_delay_ms": 823,
+          "affected_tenants": [
+            "cascade-a",
+            "cascade-b"
+          ],
+          "affected_tenant_count": 2,
+          "failed_control": "upstream_availability",
+          "control_outcome": "fell_back",
+          "recovery_action": "open breaker and fall back",
+          "evidence_event_ids": [
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62
+          ],
+          "evidence_trace_ids": [
+            "945298ae996d32b849c469cbfa2d5890",
+            "dd0b3de49b118dacbd0c0314fd538d96",
+            "e89de81a6571422ca2e952180acba480",
+            "f6e471a9d631a883530b8aa28d7b91e8"
+          ],
+          "evidence_event_types": [
+            "upstream_timeout_cascade"
+          ],
+          "linkage_complete": true
+        }
+      ]
+    }
+  ],
+  "benign_replay": {
+    "alerts": 0,
+    "incidents": [],
+    "requests_sent": 66,
+    "events_observed": 20,
+    "request_count_matches_malicious": true,
+    "per_scenario": [
+      {
+        "scenario": "stolen_token_replay",
+        "requests_sent": 3,
+        "events_observed": 0,
+        "alerts": 0,
+        "notes": [
+          "three presentations of one unbound token",
+          "all three presentations come from the certificate that first used it"
+        ]
+      },
+      {
+        "scenario": "cert_binding_mismatch",
+        "requests_sent": 2,
+        "events_observed": 0,
+        "alerts": 0,
+        "notes": [
+          "two presentations of a token the issuer bound to one certificate",
+          "presented with the certificate it is bound to"
+        ]
+      },
+      {
+        "scenario": "provider_key_anomaly",
+        "requests_sent": 20,
+        "events_observed": 20,
+        "alerts": 0,
+        "notes": [
+          "twenty requests on the same rotated key still inside its grace window",
+          "the provider reports 200 in and 100 out per request: 2,100 micros each"
+        ]
+      },
+      {
+        "scenario": "ssrf_metadata_attempt",
+        "requests_sent": 2,
+        "events_observed": 0,
+        "alerts": 0,
+        "notes": [
+          "two requests on a route whose upstream is a private address, which must NOT be refused"
+        ]
+      },
+      {
+        "scenario": "auth_rate_burst",
+        "requests_sent": 32,
+        "events_observed": 0,
+        "alerts": 0,
+        "notes": [
+          "twelve credential presentations then twenty requests, on one tenant",
+          "all thirty two carry the tenant's own key, paced at 80ms so they stay inside the tenant's own policy"
+        ]
+      },
+      {
+        "scenario": "upstream_timeout_cascade",
+        "requests_sent": 7,
+        "events_observed": 0,
+        "alerts": 0,
+        "notes": [
+          "seven requests from two tenants to one upstream host, on the same routes in both legs",
+          "the same upstream answers, so nothing times out, the breaker stays closed and no hedge fires"
+        ]
+      }
+    ]
+  },
+  "determinism": {
+    "runs": 2,
+    "normalized_timelines_identical": true,
+    "normalized_digest_sha256": "9d5252fe731e3b91cd14c93b88c70b9a460db90815b55b723f26b15686d67893"
+  },
+  "timeline_integrity": {
+    "path": "results/security-ops-timeline.jsonl",
+    "events_recorded": 164,
+    "events_rebuilt_from_log": 164,
+    "rebuild_matches_memory": true
+  },
+  "detection_delay_ms": {
+    "median_across_malicious_scenarios": 0,
+    "max_across_malicious_scenarios": 823,
+    "note": "milliseconds from the first event of an incident to the event that satisfied its rule, inside a script that controls its own timing. It is not a measurement of how fast anybody would notice: there is no alerting path and no human here. Scenarios whose rule is satisfied by their own first event are 0 ms by construction, which the manifest says up front."
+  },
+  "frozen_thresholds": [
+    {
+      "threshold": "malicious scenarios detected",
+      "required": "6 of 6",
+      "observed": "6 of 6",
+      "pass": true
+    },
+    {
+      "threshold": "alerts on the matched benign replay",
+      "required": "0",
+      "observed": "0",
+      "pass": true
+    },
+    {
+      "threshold": "tenant, trace, control and outcome on every incident",
+      "required": "complete",
+      "observed": "complete",
+      "pass": true
+    },
+    {
+      "threshold": "normalized replay identical across two runs",
+      "required": "identical",
+      "observed": "identical",
+      "pass": true
+    },
+    {
+      "threshold": "the timeline rebuilt from its own log matches what was recorded",
+      "required": "matches",
+      "observed": "matches",
+      "pass": true
+    },
+    {
+      "threshold": "the benign replay sent the same number of requests as the attack",
+      "required": "equal",
+      "observed": "equal",
+      "pass": true
+    }
+  ],
+  "planted_negative_control": {
+    "active_in_this_build": false,
+    "note": "true only in a build carrying -tags secops_planted_fault, which strips the trace id from cert_mismatch events so the linkage check can be shown to be able to fail"
+  },
+  "pass": true
+}
