@@ -52,15 +52,26 @@ func renderMarkdown(r *Report) string {
 		for _, note := range s.Notes {
 			fmt.Fprintf(&b, "- %s\n", note)
 		}
-		fmt.Fprintf(&b, "- %d requests, %d security events, %d incident(s)\n",
-			s.RequestsSent, s.EventsObserved, len(s.Incidents))
-		if s.Detected {
-			fmt.Fprintf(&b, "- outcome recorded by the control that decided: `%s`\n", s.ControlOutcome)
-			fmt.Fprintf(&b, "- affected tenants: %s\n", strings.Join(s.AffectedTenants, ", "))
-			fmt.Fprintf(&b, "- evidence: %d events across %d trace(s)\n",
-				len(s.EvidenceEventIDs), len(s.EvidenceTraceIDs))
-		} else {
-			fmt.Fprintf(&b, "- **not detected**\n")
+		fmt.Fprintf(&b, "- %d requests, %d security events, %s\n",
+			s.RequestsSent, s.EventsObserved, plural(len(s.Incidents), "incident", "incidents"))
+		if !s.Detected {
+			fmt.Fprintf(&b, "- **not detected**\n\n")
+			continue
+		}
+		fmt.Fprintf(&b, "- outcome recorded by the control that decided: `%s`\n", s.ControlOutcome)
+		fmt.Fprintf(&b, "- affected tenants: %s\n", strings.Join(s.AffectedTenants, ", "))
+		fmt.Fprintf(&b, "- evidence: %d events across %s\n",
+			len(s.EvidenceEventIDs), plural(len(s.EvidenceTraceIDs), "trace", "traces"))
+		if len(s.Incidents) > 1 {
+			// The table above reports the first incident. Say so, rather than
+			// letting a reader assume one scenario is always one incident: a
+			// burst of refused credentials and a burst of limiter refusals
+			// are two findings on two groups, and both are real.
+			fmt.Fprintf(&b, "- this scenario produced more than one incident, and the table above reports the first:\n")
+			for _, inc := range s.Incidents {
+				fmt.Fprintf(&b, "  - `%s` on `%s`: %d events, detected at +%d ms, outcome `%s`\n",
+					inc.ID, inc.GroupKey, len(inc.EvidenceEventIDs), inc.DetectionDelayMS, inc.ControlOutcome)
+			}
 		}
 		fmt.Fprintf(&b, "\n")
 	}
@@ -118,16 +129,33 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-// heldText says whether the control refused the request, which is a different
-// question from whether the activity was detected.
+// heldText says what the control did, which is a different question from
+// whether the activity was detected. Collapsing the four outcomes into a
+// yes/no would report a cascade that recovered as a control that failed to
+// refuse something, which is not what happened.
 func heldText(s ScenarioResult) string {
 	if !s.Detected {
 		return "unknown"
 	}
-	if s.ControlHeld {
+	switch s.ControlOutcome {
+	case "rejected":
 		return "yes, refused"
+	case "allowed":
+		return "no, allowed"
+	case "fell_back":
+		return "recovered, fell back"
+	case "timed_out":
+		return "no, timed out"
+	default:
+		return s.ControlOutcome
 	}
-	return "no, allowed"
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 func lastNote(notes []string) string {

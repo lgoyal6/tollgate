@@ -34,14 +34,22 @@ event looks like this, and the four fields that make it useful an hour later
 are `tenant_id`, `trace_id`, `control` and `outcome`:
 
 ```
-{"event_id":41,"timestamp":"...","event_type":"token_replay","request_id":"...",
- "trace_id":"...","span_id":"...","tenant_id":"replay-co","key_id":"oidc:user-replay",
- "route":"/api/","provider_attempt":0,"hedged":false,"fallback":false,
- "control":"oidc_token_replay_detector","outcome":"allowed",
+{"event_id":41,"timestamp":"2026-09-09T22:41:48.393519Z","event_type":"token_replay",
+ "request_id":"...","trace_id":"...","span_id":"...","tenant_id":"replay-co",
+ "key_id":"oidc:user-replay","route":"unmatched","provider_attempt":0,
+ "hedged":false,"fallback":false,"control":"oidc_token_replay_detector",
+ "outcome":"allowed",
  "evidence":{"token_id":"jti:...","peer":"cert:...","first_seen_peer":"cert:..."}}
 ```
+
+Two fields read oddly until you know where the event came from.
 
 `tenant_id` is `unauthenticated` on any event for a request that never
 resolved to a tenant. That is not a gap in the record: a credential the
 gateway refused was never accepted as anybody's, and guessing whose it might
 have been is how a rejection turns into an accusation.
+
+`route` is `unmatched` on anything decided in the auth layer, because routing
+happens after authentication and there was no route yet. The `trace_id` is
+how you find what the request went on to do; the event records what was known
+when the decision was made, rather than what turned out to be true later.
