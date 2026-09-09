@@ -13,6 +13,7 @@ import (
 	"github.com/lgoyal6/tollgate/internal/budget"
 	"github.com/lgoyal6/tollgate/internal/limits"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
+	"github.com/lgoyal6/tollgate/internal/secops"
 )
 
 // maxBudgetInspectBody caps how much of a request body the estimator will buffer.
@@ -138,6 +139,14 @@ func settleObserved(ctx context.Context, ledger budgetLedger, tenantID, requestI
 
 	if in, out, ok := budget.UsageFromResponse(sw.body.Bytes()); ok {
 		if cost, priced := budget.Cost(model, in, out); priced {
+			// Settlement is the only point in the gateway that knows what a
+			// request actually cost: the hold taken before forwarding is an
+			// upper bound computed from the caller's own declared ceiling,
+			// and a detector reading that would report an anomaly for
+			// anybody who declared a large max_tokens and then sent a short
+			// prompt. The detector cannot refuse anything; the ledger below
+			// is still the only thing that can.
+			secops.From(ctx).NoteSpend(ctx, cost, info != nil && info.KeyDeprecated)
 			if _, err := ledger.Settle(ctx, tenantID, requestID, cost); err != nil {
 				logger.Error("budget settle failed", "tenant", tenantID, "error", err)
 			}
