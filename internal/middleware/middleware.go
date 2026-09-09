@@ -405,6 +405,26 @@ func Router(snapshots func() *store.Snapshot) Middleware {
 			}
 			info.RoutePrefix = route.PathPrefix
 			info.Upstream = route.Upstream.Host
+			// Checked here as well as at upsert time, because a route row is
+			// not only written through the management API: migrations, a
+			// direct UPDATE and any row that predates the upsert check all
+			// arrive in the snapshot without passing it. This is the last
+			// point before the gateway would attach the shared provider
+			// credential and send it somewhere.
+			if reason, forbidden := store.ForbiddenUpstream(route.Upstream.Host); forbidden {
+				secops.From(r.Context()).Emit(r.Context(), secops.Event{
+					Type:    secops.EventSSRFRejected,
+					Control: secops.ControlUpstreamAllowlist,
+					Outcome: secops.OutcomeRejected,
+					Evidence: map[string]string{
+						"upstream_host": route.Upstream.Host,
+						"reason":        reason,
+						"route_id":      strconv.FormatInt(route.ID, 10),
+					},
+				})
+				writeJSONError(w, info, http.StatusBadGateway, "route upstream is refused by the gateway")
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(reqctx.WithRoute(r.Context(), route)))
 		})
 	}

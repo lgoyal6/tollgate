@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -177,6 +178,15 @@ func (r RouteSpec) Validate() error {
 	}
 	if r.PathPrefix[0] != '/' {
 		return Invalid("path prefix must start with /")
+	}
+	// The upstream is where this gateway sends the credential it holds on
+	// everybody's behalf, so it is checked here as well as at request time.
+	// A URL this cannot parse is left to the snapshot loader to complain
+	// about, which is where that error already belongs.
+	if u, err := url.Parse(r.Upstream); err == nil {
+		if reason, forbidden := ForbiddenUpstream(u.Host); forbidden {
+			return Invalid("upstream is refused: %s", reason)
+		}
 	}
 	for _, value := range []string{r.PathPrefix, r.Upstream, r.RequiredScope, r.UpstreamAuthHeader, r.UpstreamAuthEnv, r.UpstreamAuthPrefix} {
 		if strings.ContainsRune(value, 0) {
