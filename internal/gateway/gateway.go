@@ -30,6 +30,7 @@ import (
 	"github.com/lgoyal6/tollgate/internal/proxy"
 	"github.com/lgoyal6/tollgate/internal/ratelimit"
 	"github.com/lgoyal6/tollgate/internal/resilience"
+	"github.com/lgoyal6/tollgate/internal/secops"
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
@@ -49,6 +50,11 @@ type Gateway struct {
 	// tokens is nil unless OIDC_ISSUERS is set, in which case the gateway
 	// accepts exactly one credential type, as it always did.
 	tokens *middleware.TokenAuth
+	// secevents records one structured security event per control decision.
+	// It has no configuration and no off switch because it does not change
+	// what any control does: it writes a log line and a span event where
+	// there was previously a metric increment and nothing else.
+	secevents *secops.Recorder
 
 	ready atomic.Bool
 }
@@ -118,6 +124,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		metrics: observability.NewMetrics(),
 		store:   st,
 		watcher: store.NewWatcher(st, logger, cfg.ReloadPollInterval, cfg.ReloadDebounce),
+		secevents: secops.NewRecorder(secops.Options{
+			Sinks: []secops.Sink{secops.LogSink(logger)},
+			Spend: secops.SpendThresholds{
+				// The frozen thresholds from secops/manifest.json. Not
+				// environment variables: a detection threshold an operator
+				// can move is a detection threshold that gets moved until it
+				// stops alerting, and the evaluation's numbers would then
+				// describe nobody's deployment.
+				Window:            5 * time.Second,
+				MinRequests:       10,
+				MinSpendMicros:    2_000_000,
+				RequireRotatedKey: true,
+			},
+		}),
 	}
 
 	if len(cfg.OIDCIssuers) > 0 {
@@ -201,6 +221,9 @@ func (g *Gateway) handler() http.Handler {
 	snapshots := g.watcher.Snapshot
 	mws := []middleware.Middleware{
 		middleware.Recover(g.logger),
+		// Directly inside Recover, so every layer below it can record a
+		// decision, and outside everything that makes one.
+		secops.Observe(g.secevents),
 		middleware.CORS(g.cfg.CORSOrigins),
 		middleware.RequestID(),
 		middleware.AccessLog(g.logger, g.cfg.AccessLogEnabled, g.cfg.AccessLogSample),

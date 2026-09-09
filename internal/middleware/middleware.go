@@ -34,6 +34,7 @@ import (
 	"github.com/lgoyal6/tollgate/internal/observability"
 	"github.com/lgoyal6/tollgate/internal/ratelimit"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
+	"github.com/lgoyal6/tollgate/internal/secops"
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
@@ -250,6 +251,7 @@ func Auth(snapshots func() *store.Snapshot, m *observability.Metrics, tokens *To
 			raw := credentialFrom(r)
 			if raw == "" {
 				m.AuthFailures.WithLabelValues("missing").Inc()
+				recordAuthRejection(r, "missing", "none")
 				writeJSONError(w, info, http.StatusUnauthorized, "missing API key")
 				return
 			}
@@ -266,21 +268,39 @@ func Auth(snapshots func() *store.Snapshot, m *observability.Metrics, tokens *To
 				key        *store.APIKey
 				deprecated bool
 				graceUntil *time.Time
+				// tokenAuthenticated is the verified token, kept so the
+				// replay filter can be consulted after the tenant is known
+				// and the event can name it.
+				tokenAuthenticated *jwt.Verified
 			)
 			if tokens != nil && jwt.LooksLikeJWT(raw) {
-				verified, err := tokens.verify(r.Context(), raw, bindingFor(r))
+				binding := bindingFor(r)
+				verified, err := tokens.verify(r.Context(), raw, binding)
 				if err == nil {
 					tenant, key, err = tokenVerdict(snap, verified)
 				}
 				if err != nil {
-					m.AuthFailures.WithLabelValues(tokenFailureReason(err)).Inc()
+					reason := tokenFailureReason(err)
+					m.AuthFailures.WithLabelValues(reason).Inc()
+					// Certificate binding is its own event rather than one
+					// more auth_rejected reason: it is the only rejection here
+					// that says somebody held a valid credential they could
+					// not prove was theirs.
+					if errors.Is(err, jwt.ErrNotBound) {
+						recordCertMismatch(r, binding)
+					} else {
+						recordAuthRejection(r, reason, "token")
+					}
 					writeJSONError(w, info, http.StatusUnauthorized, "invalid credential")
 					return
 				}
+				tokenAuthenticated = verified
 			} else {
 				verdict, err := auth.Verify(snap, raw, time.Now())
 				if err != nil {
-					m.AuthFailures.WithLabelValues(authFailureReason(err)).Inc()
+					reason := authFailureReason(err)
+					m.AuthFailures.WithLabelValues(reason).Inc()
+					recordAuthRejection(r, reason, "api_key")
 					// One opaque message for every failure mode: never confirm
 					// whether a key id exists or is merely revoked.
 					writeJSONError(w, info, http.StatusUnauthorized, "invalid API key")
@@ -298,6 +318,22 @@ func Auth(snapshots func() *store.Snapshot, m *observability.Metrics, tokens *To
 				if graceUntil != nil {
 					w.Header().Set("X-Api-Key-Grace-Until", graceUntil.UTC().Format(time.RFC3339))
 				}
+				// A key still working after it was rotated is not an
+				// incident on its own; it is the grace window doing its job.
+				// It is recorded because it is half of the one that is: a
+				// credential on its way out, spending fast.
+				secops.From(r.Context()).Emit(r.Context(), secops.Event{
+					Type:    secops.EventKeyRotation,
+					Control: secops.ControlKeyRotationGrace,
+					Outcome: secops.OutcomeAllowed,
+					Evidence: map[string]string{
+						"key_state":     string(store.KeyGrace),
+						"grace_expired": "false",
+					},
+				})
+			}
+			if tokenAuthenticated != nil {
+				noteTokenPresentation(r, tokenAuthenticated)
 			}
 
 			// The gateway credential must not leak to upstreams.
@@ -420,6 +456,21 @@ func RateLimit(limiter ratelimit.Limiter, failOpen bool, m *observability.Metric
 					retryAfterSec = 1
 				}
 				w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSec, 10))
+				// One refusal, not a burst. Several of these in a window is
+				// what a burst is, and deciding that is the correlator's job:
+				// a middleware that kept its own burst counter would be a
+				// second, disagreeing opinion about the same traffic.
+				secops.From(r.Context()).Emit(r.Context(), secops.Event{
+					Type:    secops.EventRateBurst,
+					Control: secops.ControlRateLimit,
+					Outcome: secops.OutcomeRejected,
+					Evidence: map[string]string{
+						"algorithm":           string(policy.Algorithm),
+						"limit":               strconv.FormatInt(decision.Limit, 10),
+						"remaining":           strconv.FormatInt(decision.Remaining, 10),
+						"retry_after_seconds": strconv.FormatInt(retryAfterSec, 10),
+					},
+				})
 				writeJSONError(w, info, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
