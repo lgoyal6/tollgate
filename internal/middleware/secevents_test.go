@@ -219,3 +219,61 @@ func TestTheChainIsUnchangedWithoutARecorder(t *testing.T) {
 		t.Errorf("valid key = %d, want 200", got)
 	}
 }
+
+// A route already in the snapshot pointing at the instance metadata endpoint
+// is the case the upsert check cannot cover: the row may predate the check,
+// or have arrived by migration or a direct UPDATE. This is the last point
+// before the gateway would attach the shared provider credential and send it
+// there.
+func TestARouteToTheMetadataEndpointIsRefusedAtRequestTime(t *testing.T) {
+	realTracer(t)
+	active, err := auth.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	snap := store.SnapshotForTest(
+		[]*store.Tenant{{
+			ID: "acme", Name: "Acme", Enabled: true,
+			RLAlgorithm: store.AlgoSlidingWindow, RLWindow: time.Second, RLLimit: 100,
+		}},
+		[]*store.Route{
+			{ID: 7, TenantID: "acme", PathPrefix: "/meta/", Timeout: time.Second,
+				Upstream: mustURL(t, "http://169.254.169.254")},
+			{ID: 8, TenantID: "acme", PathPrefix: "/private/", Timeout: time.Second,
+				Upstream: mustURL(t, "http://10.4.0.11:8080")},
+		},
+		[]*store.APIKey{{ID: active.ID, TenantID: "acme", SecretHash: active.SecretHash, Status: store.KeyActive}},
+	)
+
+	log := &eventLog{}
+	h := secChain(snap, secops.NewRecorder(secops.Options{Sinks: []secops.Sink{log}}))
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/latest/meta-data/", nil)
+	req.Header.Set("X-API-Key", active.Plaintext)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body %s", rec.Code, rec.Body)
+	}
+	events := log.ofType(secops.EventSSRFRejected)
+	if len(events) != 1 {
+		t.Fatalf("emitted %d ssrf_rejected events, want 1", len(events))
+	}
+	if events[0].Evidence["upstream_host"] != "169.254.169.254" || !events[0].LinkageComplete() {
+		t.Errorf("unexpected event %+v", events[0])
+	}
+
+	// A private upstream must not be refused: the kind deployment and the
+	// compose stack both proxy to one, and a guard that broke those would be
+	// turned off by the first person who hit it.
+	req = httptest.NewRequest(http.MethodGet, "/private/thing", nil)
+	req.Header.Set("X-API-Key", active.Plaintext)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusBadGateway {
+		t.Errorf("a private upstream was refused by the metadata guard")
+	}
+	if got := len(log.ofType(secops.EventSSRFRejected)); got != 1 {
+		t.Errorf("a private upstream produced an ssrf_rejected event (%d total)", got)
+	}
+}
