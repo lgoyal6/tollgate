@@ -33,8 +33,9 @@ else in the gateway reads those two columns together.
 
 1. Look for `key_rotation` events on the same `tenant_id` and `key_id`
    immediately before. Those are the requests that made up the window.
-2. Check the key's row: `tollgate-admin list` shows its status and
-   `grace_until`. If the grace window has hours left, the spend has hours
+2. Check the key's row. The console at `/_admin/` lists keys with their
+   status and `grace_until`, and so does `GET /_admin/api/overview` behind
+   the admin token. If the grace window has hours left, the spend has hours
    left too.
 3. Open any of the `trace_id`s. The span carries the route, the upstream and
    the provider attempt, so you can see which model is being called.
@@ -48,8 +49,10 @@ it is spending like this, the migration either happened (and something else
 is using the old key) or is not going to.
 
 ```sh
-tollgate-admin revoke-key <key_id>
+tollgate-admin revoke-key -key <key_id>
 ```
+
+or **Revoke** in the console.
 
 Revocation binds on every replica before the next protected action, not on
 the next snapshot reload, because the gateway re-checks key liveness with a
