@@ -10,9 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lgoyal6/tollgate/internal/budget"
 	"github.com/lgoyal6/tollgate/internal/reqctx"
+	"github.com/lgoyal6/tollgate/internal/secops"
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
@@ -305,5 +307,75 @@ func TestUsageParsingHandlesBothProviderSpellings(t *testing.T) {
 	}
 	if _, _, ok := budget.UsageFromResponse([]byte(`{"no":"usage"}`)); ok {
 		t.Error("a response with no usage block must report ok=false")
+	}
+}
+
+// The provider anomaly detector reads two facts the gateway already had and
+// never joined: a key on its way out of a rotation, and real money in a short
+// window. Neither is remarkable alone, which is why nothing on main was
+// looking at them together.
+func TestSpendAnomalyNeedsBothARotatedKeyAndASpike(t *testing.T) {
+	realTracer(t)
+	// The frozen thresholds from secops/manifest.json.
+	frozen := secops.SpendThresholds{
+		Window:            5 * time.Second,
+		MinRequests:       10,
+		MinSpendMicros:    2_000_000,
+		RequireRotatedKey: true,
+	}
+	// claude-sonnet-5 at these token counts is 510,000 micros a request, so
+	// twenty of them is 10.2 million against a 2 million floor.
+	expensive := `{"usage":{"input_tokens":20000,"output_tokens":30000}}`
+	ordinary := `{"usage":{"input_tokens":200,"output_tokens":100}}`
+
+	tests := []struct {
+		name       string
+		body       string
+		deprecated bool
+		wantEvents int
+	}{
+		{"a grace-window key spending fast", expensive, true, 1},
+		{"a grace-window key spending normally", ordinary, true, 0},
+		{"an active key spending fast", expensive, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := &eventLog{}
+			rec := secops.NewRecorder(secops.Options{Sinks: []secops.Sink{log}, Spend: frozen})
+			f := &fakeLedger{remaining: 1_000_000_000}
+			h := Chain(upstream(200, tt.body),
+				secops.Observe(rec),
+				Tracing("tollgate-test"),
+				Budget(f, false, testLogger),
+			)
+			for i := 0; i < 20; i++ {
+				req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(pricedReq))
+				ctx := reqctx.WithInfo(req.Context(), &reqctx.Info{
+					RequestID: "req-spend", TenantID: "spend-co", KeyID: "kold", KeyDeprecated: tt.deprecated,
+				})
+				ctx = reqctx.WithTenant(ctx, &store.Tenant{ID: "spend-co"})
+				h.ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
+			}
+			events := log.ofType(secops.EventProviderAnomaly)
+			if len(events) != tt.wantEvents {
+				t.Fatalf("emitted %d provider_anomaly events, want %d", len(events), tt.wantEvents)
+			}
+			for _, e := range events {
+				if e.Outcome != secops.OutcomeAllowed {
+					t.Errorf("outcome = %q: the detector refuses nothing", e.Outcome)
+				}
+				if e.TenantID != "spend-co" || !e.LinkageComplete() {
+					t.Errorf("event is not linked: %+v", e)
+				}
+				if e.Evidence["requests_in_window"] != "10" {
+					t.Errorf("requests_in_window = %q, want 10, the threshold it fired on",
+						e.Evidence["requests_in_window"])
+				}
+			}
+			// Settlement must be unaffected either way.
+			if f.settled == 0 {
+				t.Error("the ledger settled nothing; the detector changed the budget path")
+			}
+		})
 	}
 }
