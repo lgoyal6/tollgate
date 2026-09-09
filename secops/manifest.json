@@ -1,0 +1,343 @@
+{
+  "manifest_version": 1,
+  "name": "tollgate security operations detection evaluation",
+  "frozen_at": "2026-09-09",
+  "frozen_note": "Every scenario, detector rule, threshold, linkage requirement and success threshold below was written and committed BEFORE any result was produced. Nothing here may be edited in response to a result; a rule that turns out to be wrong is a finding to report, not a number to move.",
+
+  "evidence_boundary": {
+    "runs_on": "one local host, in a single Go process",
+    "traffic": "synthetic scripted replay driven through the real middleware chain in process (httptest upstreams, in-memory config snapshot, in-memory rate limiter, in-memory spend ledger)",
+    "not_claimed": [
+      "no SOC, no on-call rotation, no paging",
+      "no customer or production traffic",
+      "no incident history: every incident in the results is one this harness caused on purpose, seconds earlier",
+      "no prevention claim: this lane is detection only, and where a request was refused it was refused by a control that already existed",
+      "no distributed claim: one process, one host, no Redis and no Postgres"
+    ],
+    "implemented_vs_measured": {
+      "implemented": "structured security events at the existing control decision points, OpenTelemetry span-event linkage, an append-only JSONL incident timeline with a rebuild-from-log path, a deterministic correlator, three added detectors and one added allow-list control",
+      "measured": "detection true/false per scenario, detection delay in milliseconds, affected tenant count, linkage completeness, alert count on a matched benign replay, and byte-identical determinism of the normalized timeline across two runs, all on the single host described above"
+    }
+  },
+
+  "event_contract": {
+    "required_fields": [
+      "event_id", "timestamp", "event_type", "request_id", "trace_id", "span_id",
+      "tenant_id", "route", "provider_attempt", "hedged", "fallback", "control", "outcome"
+    ],
+    "optional_fields": ["key_id", "evidence"],
+    "event_id": "monotonic sequence within the process, shared by every recorder in it",
+    "tenant_id": "the resolved tenant, or the literal label 'unauthenticated' for a request that never resolved to one",
+    "outcomes": ["rejected", "allowed", "fell_back", "timed_out"],
+    "otel_linkage": "every event is also added to the active request span as a span event carrying the same fields, so request, tenant, provider attempt, fallback and final outcome share one trace"
+  },
+
+  "linkage": {
+    "required_fields_on_every_evidence_event": ["tenant_id", "trace_id", "control", "outcome"],
+    "linkage_complete": "true only when every evidence event of the incident carries all four of the fields above as non-empty values"
+  },
+
+  "determinism": {
+    "definition": "the harness runs the full replay twice in one process; each run's timeline is normalized and the two normalized timelines must be byte identical",
+    "normalization": {
+      "timestamp": "replaced by the event's ordinal within its own scenario leg, counting from the first event of that leg",
+      "event_id": "replaced by the event's ordinal within its own scenario leg",
+      "request_id": "replaced by the fixed token <request-id>",
+      "trace_id": "replaced by the fixed token <trace-id>",
+      "span_id": "replaced by the fixed token <span-id>",
+      "normalized_evidence_keys": [
+        "peer", "first_seen_peer", "presented_thumbprint", "expected_thumbprint", "upstream_host", "request_id"
+      ]
+    },
+    "requirement": "byte-identical normalized timelines across the two runs"
+  },
+
+  "negative_control": {
+    "mechanism": "a build tag, secops_planted_fault, selects a variant of one function in internal/secops that breaks exactly one correlation edge: it strips trace_id from every cert_mismatch event. The normal build compiles a no-op variant of the same function, so the fault cannot exist outside that tag.",
+    "expected_failure": "the cert_binding_mismatch incident reports linkage_complete=false, the run fails its success thresholds, and the harness exits non-zero",
+    "restoration": "the harness is run again without the tag and must pass"
+  },
+
+  "success_thresholds": {
+    "malicious_scenarios_detected": "6 of 6",
+    "benign_alerts": 0,
+    "linkage_complete_on_every_incident": true,
+    "normalized_replay_deterministic": true,
+    "planted_negative_control_caught": true
+  },
+
+  "scenarios": [
+    {
+      "key": "stolen_token_replay",
+      "ordinal": 1,
+      "title": "stolen-token replay: a valid token presented again from a different peer identity",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "oidc_token_replay_detector",
+          "status": "added by this lane",
+          "why": "no jti or token replay filter existed on main, so scenario 1 had nothing to observe. It is the control the detection observes: a bounded in-memory recent-seen filter over token ids. It never rejects anything.",
+          "detection_only": "whether the request is refused is decided entirely by rfc8705_certificate_binding, which already existed; the filter only records that the same token id arrived from a second peer identity"
+        },
+        {
+          "control": "rfc8705_certificate_binding",
+          "status": "already on main",
+          "where": "internal/jwt/verify.go checkBinding, ErrNotBound"
+        }
+      ],
+      "expected_event_types": ["token_replay"],
+      "rule": {
+        "group_by": "tenant",
+        "match_event_types": ["token_replay"],
+        "min_events": 1,
+        "window_ms": 0,
+        "detection_event": "the first token_replay event in the group"
+      },
+      "detector_thresholds": {
+        "replay_filter_capacity": 4096,
+        "peer_identity": "the SHA-256 thumbprint of the presented client certificate, or ip:<remote host> when no client certificate was presented",
+        "token_identity": "the jti claim, or the SHA-256 of the raw token when the token carries no jti",
+        "fires_when": "a token id already recorded within its own lifetime is presented again from a different peer identity"
+      },
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "rfc8705_certificate_binding",
+      "recovery_action": "revoke key",
+      "expected_outcome": "allowed",
+      "expected_outcome_note": "the replayed token in this scenario carries no cnf claim, so certificate binding cannot constrain it and the existing control admits the request. The detection reports a stolen credential in use; it does not stop it. That gap is the finding, and it is the same one the README already states about bearer tokens.",
+      "detection_delay_note": "0 ms by construction: the detector fires on the first replayed presentation, which is also the first event in the group. This is a property of the rule, not a measurement of speed."
+    },
+    {
+      "key": "cert_binding_mismatch",
+      "ordinal": 2,
+      "title": "certificate-bound token presented with the wrong client certificate",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "rfc8705_certificate_binding",
+          "status": "already on main",
+          "where": "internal/jwt/verify.go checkBinding returns ErrNotBound; internal/middleware/middleware.go Auth turns it into an opaque 401"
+        }
+      ],
+      "expected_event_types": ["cert_mismatch"],
+      "rule": {
+        "group_by": "tenant",
+        "match_event_types": ["cert_mismatch"],
+        "min_events": 1,
+        "window_ms": 0,
+        "detection_event": "the first cert_mismatch event in the group"
+      },
+      "detector_thresholds": {},
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "client_certificate_possession",
+      "recovery_action": "rotate key",
+      "expected_outcome": "rejected",
+      "expected_outcome_note": "the existing control held: the request was refused. failed_control names the guarantee the activity tried to break, and control_outcome on the incident says whether the control held.",
+      "detection_delay_note": "0 ms by construction, as above."
+    },
+    {
+      "key": "provider_key_anomaly",
+      "ordinal": 3,
+      "title": "rotated key still in its grace window, used far above baseline with a spend spike",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "api_key_rotation_grace",
+          "status": "already on main",
+          "where": "internal/auth/auth.go Verify: KeyGrace, GraceUntil, ErrGraceExpired; surfaced as X-Api-Key-Deprecated"
+        },
+        {
+          "control": "budget_settlement",
+          "status": "already on main",
+          "where": "internal/middleware/budget.go settleObserved, internal/budget Cost"
+        },
+        {
+          "control": "provider_spend_anomaly_detector",
+          "status": "added by this lane",
+          "why": "the two facts existed separately and were never joined: nothing on main reads 'a rotated key' together with 'this much money in this little time'. It is the control the detection observes. It never rejects anything; the budget ledger remains the only thing that can refuse a request on spend.",
+          "detection_only": true
+        }
+      ],
+      "expected_event_types": ["key_rotation", "provider_anomaly"],
+      "rule": {
+        "group_by": "tenant",
+        "match_event_types": ["key_rotation", "provider_anomaly"],
+        "min_events": 1,
+        "require_event_type": "provider_anomaly",
+        "window_ms": 0,
+        "detection_event": "the first provider_anomaly event in the group"
+      },
+      "detector_thresholds": {
+        "window_ms": 5000,
+        "min_requests_in_window": 10,
+        "min_spend_micros_in_window": 2000000,
+        "requires_rotated_or_grace_key": true,
+        "note": "all three conditions must hold at once. Micros are 1e-6 USD, the unit the budget ledger already uses."
+      },
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "api_key_rotation_grace",
+      "recovery_action": "revoke key",
+      "expected_outcome": "allowed",
+      "expected_outcome_note": "the grace window is doing exactly what it is for, so nothing refuses these requests. The detection is the only thing that says the key should have been revoked rather than left to expire."
+    },
+    {
+      "key": "ssrf_metadata_attempt",
+      "ordinal": 4,
+      "title": "a route whose upstream is a cloud instance metadata endpoint",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "upstream_metadata_allowlist",
+          "status": "added by this lane",
+          "why": "no SSRF guard existed on main. It is the control the detection observes: one function that refuses a link-local instance metadata target, called from route validation at configuration time and from route resolution at request time. RFC 1918 and loopback are deliberately NOT refused, because local compose and kind deployments legitimately proxy to private upstreams.",
+          "where": "internal/store/upstream_guard.go ForbiddenUpstream, called from store.RouteSpec.Validate and from middleware.Router"
+        }
+      ],
+      "expected_event_types": ["ssrf_rejected"],
+      "rule": {
+        "group_by": "tenant",
+        "match_event_types": ["ssrf_rejected"],
+        "min_events": 1,
+        "window_ms": 0,
+        "detection_event": "the first ssrf_rejected event in the group"
+      },
+      "detector_thresholds": {
+        "refused_hosts": [
+          "169.254.0.0/16",
+          "fe80::/10",
+          "fd00:ec2::254",
+          "metadata.google.internal",
+          "metadata.goog"
+        ],
+        "explicitly_allowed": [
+          "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1"
+        ]
+      },
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "upstream_metadata_allowlist",
+      "recovery_action": "reject route",
+      "expected_outcome": "rejected"
+    },
+    {
+      "key": "auth_rate_burst",
+      "ordinal": 5,
+      "title": "a burst of rejected credentials and limiter refusals in a short window",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "api_key_verification",
+          "status": "already on main",
+          "where": "internal/auth/auth.go Verify; internal/middleware Auth maps every failure to one opaque 401"
+        },
+        {
+          "control": "ratelimit_sliding_window",
+          "status": "already on main",
+          "where": "internal/ratelimit sliding window log; internal/middleware RateLimit answers 429 with Retry-After"
+        }
+      ],
+      "expected_event_types": ["auth_rejected", "rate_burst"],
+      "rule": {
+        "group_by": "tenant",
+        "match_event_types": ["auth_rejected", "rate_burst"],
+        "min_events": 10,
+        "window_ms": 5000,
+        "detection_event": "the 10th matching event inside a 5000 ms sliding window over the group"
+      },
+      "detector_thresholds": {
+        "min_events": 10,
+        "window_ms": 5000
+      },
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "tenant_admission_control",
+      "recovery_action": "disable tenant",
+      "expected_outcome": "rejected"
+    },
+    {
+      "key": "upstream_timeout_cascade",
+      "ordinal": 6,
+      "title": "slow upstream, repeated timeouts, breaker opens, and a hedge carries the last request",
+      "malicious": true,
+      "controls_observed": [
+        {
+          "control": "circuit_breaker",
+          "status": "already on main",
+          "where": "internal/resilience/breaker.go, per upstream host, tripping at >= 50 percent failures over >= 20 samples"
+        },
+        {
+          "control": "retry_budget",
+          "status": "already on main",
+          "where": "internal/proxy/proxy.go doWithRetries, capped at 5 attempts"
+        },
+        {
+          "control": "request_hedge",
+          "status": "already on main",
+          "where": "internal/resilience/hedge.go, internal/proxy/proxy.go doHedged"
+        }
+      ],
+      "expected_event_types": ["upstream_timeout_cascade"],
+      "rule": {
+        "group_by": "upstream",
+        "match_event_types": ["upstream_timeout_cascade"],
+        "min_events": 3,
+        "min_events_with_outcome": {"outcome": "timed_out", "count": 3},
+        "require_outcome": "fell_back",
+        "window_ms": 15000,
+        "detection_event": "the first event with outcome fell_back once at least 3 timed_out events are already in the group"
+      },
+      "detector_thresholds": {
+        "min_timed_out_events": 3,
+        "window_ms": 15000,
+        "requires_fallback_outcome": true
+      },
+      "required_linkage_fields": ["tenant_id", "trace_id", "control", "outcome"],
+      "failed_control": "upstream_availability",
+      "recovery_action": "open breaker and fall back",
+      "expected_outcome": "fell_back",
+      "note": "grouped by upstream host rather than by tenant on purpose: the breaker is per host and shared by every tenant routed to it, so affected_tenant_count is the number of tenants one upstream took with it."
+    },
+    {
+      "key": "benign_matched_traffic",
+      "ordinal": 7,
+      "title": "matched benign replay: same tenants, routes, request shapes, request count and timing envelope, no attack",
+      "malicious": false,
+      "controls_observed": [],
+      "expected_event_types": [],
+      "rule": {
+        "expected_incidents": 0
+      },
+      "matched_on": [
+        "identical tenant ids, key ids and key states, including the same rotated key still in its grace window",
+        "identical routes and upstreams",
+        "identical request count per leg",
+        "identical request bodies and models, differing only in declared and reported token counts",
+        "identical timing envelope, except that the burst leg's 20 requests are paced across the limiter's window instead of arriving inside one of them, because arrival pattern is what a burst is"
+      ],
+      "required_linkage_fields": [],
+      "failed_control": null,
+      "recovery_action": null,
+      "expected_outcome": "no incidents",
+      "false_positive_probes": [
+        "a certificate-bound token presented with its own certificate must not raise cert_mismatch",
+        "a token presented once from one peer must not raise token_replay",
+        "the same grace-window key at the same request count with ordinary spend must not raise provider_anomaly",
+        "a route to a loopback upstream must not raise ssrf_rejected",
+        "valid credentials at a rate inside the tenant's own policy must not raise auth_rejected or rate_burst",
+        "a healthy upstream must not raise upstream_timeout_cascade"
+      ]
+    }
+  ],
+
+  "recovery_actions_table": {
+    "stolen_token_replay": "revoke key",
+    "cert_binding_mismatch": "rotate key",
+    "provider_key_anomaly": "revoke key",
+    "ssrf_metadata_attempt": "reject route",
+    "auth_rate_burst": "disable tenant",
+    "upstream_timeout_cascade": "open breaker and fall back"
+  },
+
+  "artifacts": {
+    "timeline": "results/security-ops-timeline.jsonl",
+    "evaluation": "results/security-ops-eval.json",
+    "report": "results/security-ops-report.md"
+  }
+}
