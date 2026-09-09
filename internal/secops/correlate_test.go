@@ -268,3 +268,27 @@ func TestCorrelateIsOrderIndependent(t *testing.T) {
 		t.Fatalf("correlation depends on input order:\n%+v\n%+v", forward, got)
 	}
 }
+
+// The gateway cannot read the manifest at runtime, so the thresholds it
+// enforces are written twice. This is the test that stops the two copies
+// drifting: a number changed in one place and not the other fails here
+// rather than in a report nobody re-derives.
+func TestTheCodeAndTheManifestAgree(t *testing.T) {
+	m := frozenManifest(t)
+
+	fromManifest, err := m.SpendThresholdsFromManifest()
+	if err != nil {
+		t.Fatalf("SpendThresholdsFromManifest: %v", err)
+	}
+	if got := FrozenSpendThresholds(); got != fromManifest {
+		t.Errorf("the spend thresholds in code are %+v, the manifest says %+v", got, fromManifest)
+	}
+
+	capacity, err := m.ReplayCapacityFromManifest()
+	if err != nil {
+		t.Fatalf("ReplayCapacityFromManifest: %v", err)
+	}
+	if capacity != defaultReplayCapacity {
+		t.Errorf("the replay filter capacity in code is %d, the manifest says %d", defaultReplayCapacity, capacity)
+	}
+}

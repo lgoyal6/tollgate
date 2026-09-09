@@ -126,17 +126,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Gateway,
 		watcher: store.NewWatcher(st, logger, cfg.ReloadPollInterval, cfg.ReloadDebounce),
 		secevents: secops.NewRecorder(secops.Options{
 			Sinks: []secops.Sink{secops.LogSink(logger)},
-			Spend: secops.SpendThresholds{
-				// The frozen thresholds from secops/manifest.json. Not
-				// environment variables: a detection threshold an operator
-				// can move is a detection threshold that gets moved until it
-				// stops alerting, and the evaluation's numbers would then
-				// describe nobody's deployment.
-				Window:            5 * time.Second,
-				MinRequests:       10,
-				MinSpendMicros:    2_000_000,
-				RequireRotatedKey: true,
-			},
+			// The frozen thresholds from secops/manifest.json, checked
+			// against it by a test. Not environment variables: a detection
+			// threshold an operator can move is a detection threshold that
+			// gets moved until it stops alerting, and the evaluation's
+			// numbers would then describe nobody's deployment.
+			Spend: secops.FrozenSpendThresholds(),
 		}),
 	}
 

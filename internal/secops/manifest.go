@@ -66,6 +66,10 @@ type Scenario struct {
 	RecoveryAction  string   `json:"recovery_action"`
 	RequiredFields  []string `json:"required_linkage_fields"`
 	ExpectedOutcome string   `json:"expected_outcome"`
+	// DetectorThresholds is the scenario's own detector configuration, kept
+	// untyped because each detector's block is a different shape and the
+	// manifest is a published document rather than a Go struct.
+	DetectorThresholds map[string]any `json:"detector_thresholds"`
 }
 
 // Rule is the frozen detection rule for one scenario.
@@ -179,4 +183,77 @@ func (m *Manifest) MaliciousScenarios() []Scenario {
 		}
 	}
 	return out
+}
+
+// FrozenSpendThresholds is the provider spend anomaly rule, in code.
+//
+// It is duplicated from secops/manifest.json on purpose: the gateway must not
+// read a repository file at runtime to decide what an anomaly is. The
+// duplication is held honest by TestTheCodeAndTheManifestAgree, which fails
+// if the two ever differ, so there is no version of this where the shipped
+// numbers and the published ones drift apart quietly.
+func FrozenSpendThresholds() SpendThresholds {
+	return SpendThresholds{
+		Window:            5 * time.Second,
+		MinRequests:       10,
+		MinSpendMicros:    2_000_000,
+		RequireRotatedKey: true,
+	}
+}
+
+// SpendThresholdsFromManifest reads the same rule out of the manifest, so a
+// test can compare the two.
+func (m *Manifest) SpendThresholdsFromManifest() (SpendThresholds, error) {
+	sc, ok := m.Scenario("provider_key_anomaly")
+	if !ok {
+		return SpendThresholds{}, fmt.Errorf("secops: manifest has no provider_key_anomaly scenario")
+	}
+	var out SpendThresholds
+	ms, err := numberFrom(sc.DetectorThresholds, "window_ms")
+	if err != nil {
+		return out, err
+	}
+	out.Window = time.Duration(ms) * time.Millisecond
+	requests, err := numberFrom(sc.DetectorThresholds, "min_requests_in_window")
+	if err != nil {
+		return out, err
+	}
+	out.MinRequests = int(requests)
+	micros, err := numberFrom(sc.DetectorThresholds, "min_spend_micros_in_window")
+	if err != nil {
+		return out, err
+	}
+	out.MinSpendMicros = micros
+	rotated, ok := sc.DetectorThresholds["requires_rotated_or_grace_key"].(bool)
+	if !ok {
+		return out, fmt.Errorf("secops: manifest provider_key_anomaly has no requires_rotated_or_grace_key")
+	}
+	out.RequireRotatedKey = rotated
+	return out, nil
+}
+
+// ReplayCapacityFromManifest is the token replay filter's frozen bound.
+func (m *Manifest) ReplayCapacityFromManifest() (int, error) {
+	sc, ok := m.Scenario("stolen_token_replay")
+	if !ok {
+		return 0, fmt.Errorf("secops: manifest has no stolen_token_replay scenario")
+	}
+	n, err := numberFrom(sc.DetectorThresholds, "replay_filter_capacity")
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// numberFrom reads one JSON number out of a threshold block.
+func numberFrom(block map[string]any, key string) (int64, error) {
+	raw, ok := block[key]
+	if !ok {
+		return 0, fmt.Errorf("secops: manifest threshold %q is missing", key)
+	}
+	f, ok := raw.(float64)
+	if !ok {
+		return 0, fmt.Errorf("secops: manifest threshold %q is %T, want a number", key, raw)
+	}
+	return int64(f), nil
 }
