@@ -292,6 +292,77 @@ the bypass restated.
 - Limiter health (`check duration`, `errors`, decisions by outcome), breaker state, retry/hedge counters, config reload counters, in-flight gauge, plus Go runtime and pprof on the admin port.
 - Admin listener (`:9090`) is separate from tenant traffic: `/healthz`, `/readyz`, `/metrics`, `/debug/pprof`.
 
+### Security events, and what happens when one fires
+
+The metrics above say a rate limit was hit 400 times. They cannot say whether
+that was one tenant's runaway loop or somebody working through a list of key
+ids, and they cannot connect it to the certificate mismatch thirty seconds
+earlier or to the spend that followed. So every control that already makes a
+security decision now also emits one structured event where it makes it:
+a refused credential, a certificate binding that did not match, a token id
+arriving from a second peer, a limiter refusal, a key used inside its rotation
+grace window, a rotated key spending fast, an upstream target refused for being
+a metadata endpoint, an upstream attempt that timed out or was carried by a
+hedge.
+
+Each event carries the four fields that make it usable an hour later - tenant,
+trace id, which control decided, and what it decided - and goes onto the
+request's span as well as into the log, so a decision and the request it was
+about are one trace rather than two systems to join by hand.
+
+Three things had nothing to observe, so they were added, and all three are
+detection only:
+
+- a bounded in-memory filter that reports a token id presented by a second
+  peer inside its lifetime. Whether that request is refused is still decided
+  by RFC 8705 certificate binding, which already existed. An unbound token is
+  admitted exactly as it was before.
+- a detector that joins two facts the gateway already had and never read
+  together: a key on its way out of a rotation, and real money in five
+  seconds. The budget ledger remains the only thing that can refuse a request
+  on spend.
+- one allow-list that refuses an upstream which is a cloud instance metadata
+  endpoint, at route upsert and again at route resolution. RFC 1918 and
+  loopback are deliberately allowed, because compose and kind proxy to both.
+
+There is no ban list, no automatic response and no suppression: the events
+observe controls, and `docs/runbooks/` is a page per event saying how to
+confirm it and what a person does next.
+
+**What was measured**, on one laptop, in one process, against synthetic
+scripted traffic driven through the real middleware chain - no Redis, no
+Postgres, no network:
+
+```bash
+./scripts/run-security-ops-eval.sh
+```
+
+From the run committed in [`results/`](results/):
+
+| | |
+|---|---|
+| malicious scenarios detected | 6 of 6 |
+| alerts on a matched benign replay (same tenants, keys, routes, request count) | 0 |
+| incidents carrying tenant, trace, control and outcome | all |
+| normalized timeline identical across two runs | yes |
+| planted negative control caught | yes |
+| detection delay, median / max | 0 ms / 823 ms |
+
+The design was frozen in [`secops/manifest.json`](secops/manifest.json) -
+scenarios, rules, thresholds, success marks - and committed before any
+detection code existed, so no number here was chosen after seeing a result.
+The negative control is a build tag that breaks one correlation edge; the
+script requires that build to FAIL, because a linkage check that has never
+failed has not been shown to be able to. Results and the full timeline are in
+[`results/`](results/).
+
+What this is not: there is no SOC, no on-call rotation and no production
+traffic anywhere in it. Every incident in those results was caused on purpose
+by the harness seconds earlier, the detection delays are measured inside a
+script that controls its own timing, and the whole thing is one process on one
+host. The 823 ms is how long a scripted cascade took to produce its own
+recovery event, not how fast anybody would notice.
+
 ## Running it
 
 ### Local (docker compose)
@@ -375,6 +446,7 @@ sequences create, rotate and delete API objects.
 cmd/gateway            main: config → wiring → serve → drain
 cmd/tollgate-admin     tenants / routes / issue-key / rotate-key / revoke-key
 cmd/upstream           echo backend with tunable latency & failure injection
+cmd/tollgate-secops-replay  scripted attack replay behind scripts/run-security-ops-eval.sh
 internal/ratelimit     limiter.go, tokenbucket.lua, slidingwindow.lua, redis.go, memory.go
 internal/resilience    breaker.go, retry.go, hedge.go
 internal/proxy         hand-rolled forwarding engine
@@ -383,6 +455,7 @@ internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher, co
 internal/admin         management API + console + openapi.json (only built when ADMIN_TOKEN is set)
 internal/auth          key format, hashing, verification, scopes, rotation
 internal/jwt           JWS verification, JWKS cache, claims, RFC 8705 binding
+internal/secops        security events, append-only timeline, correlator, detectors, replay harness
 internal/observability metrics registry, otel setup, slog
 migrations/            schema + NOTIFY triggers, parameterized seed
 deploy/helm/tollgate   chart: deployment, service, HPA (custom metric), PDB
@@ -404,3 +477,5 @@ loadtest/              k6: baseline, correctness, fairness
 - kind's NodePort path is a single proxy hop; a real deployment would sit behind a proper LB.
 - The gateway host is fully trusted: it holds the shared provider credentials in its environment. That's the point (teammates can't leak what they don't have), but it means the box itself must be treated like the secret it carries.
 - Rate limits meter *requests*, not tokens; a token-aware budget (parse usage from provider responses) is the natural next step for the LLM use case.
+- The security event layer is detection only and per process. The token replay filter and the spend anomaly window live in one gateway's memory, so a replay that lands on a different replica, or after a restart, is a first sighting, and a tenant spread across replicas is a fraction of itself in each window. Correlating across replicas would need the events shipped somewhere, which is a log pipeline this repo does not have.
+- The upstream metadata guard reads the host as written and does not resolve names. A hostname whose DNS answer is a metadata address passes it, and always will: resolution happens in the dialer, and an answer that passed a check can change before the connection is made.
