@@ -47,13 +47,12 @@ has a real key id and the wrong secret, which is a different situation from
 
 **Disable tenant** - but only for the named-tenant half, and only if the
 traffic is actually hostile rather than merely enthusiastic. The tenant kill
-switch is in the console (**Cut off**) or:
-
-```sh
-tollgate-admin update-tenant <tenant> --enabled=false
-```
-
-It binds on every replica before the next protected action.
+switch is **Cut off** in the console at `/_admin/`, which is the management
+API's tenant update with `enabled` false. (`tollgate-admin` has
+`create-tenant`, `add-route`, `issue-key`, `rotate-key`, `revoke-key`, `list`
+and `migrate`; disabling a tenant is a console or API action.) It binds on
+every replica before the next protected action, because the gateway rechecks
+tenant enablement with a targeted query immediately before acting.
 
 For the `unauthenticated` half there is nothing to disable, because there is
 no account. The refusals are already the correct outcome: the limiter and

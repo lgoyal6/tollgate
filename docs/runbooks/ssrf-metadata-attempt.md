@@ -26,7 +26,8 @@ and your provider key going with it.
 
 ## Confirm it
 
-1. Look up the route: `tollgate-admin list` or
+1. Look up the route. The console at `/_admin/` lists routes with their
+   upstreams, as does `GET /_admin/api/overview`; or
    `SELECT * FROM routes WHERE id = <route_id>`.
 2. Check `upstream_auth_env` on that row. If it is set, the route was
    configured to attach the shared provider credential to whatever it
@@ -39,12 +40,13 @@ and your provider key going with it.
 
 ## Recovery action
 
-**Reject route.** Delete the row, or repoint it:
+**Reject route.** Delete the row, or repoint it.
+
+Delete it in the console, or through the management API:
 
 ```sh
-tollgate-admin list                  # find the route id
-# then remove it through the console, or:
-DELETE FROM routes WHERE id = <route_id>;
+curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+    http://gateway-host:8080/_admin/api/routes/<route_id>
 ```
 
 Every replica picks the change up through `LISTEN/NOTIFY` without a restart.
