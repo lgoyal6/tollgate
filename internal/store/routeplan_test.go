@@ -146,6 +146,24 @@ func TestFallbackAuthHeaderAndEnvMustBeSetTogether(t *testing.T) {
 	}
 }
 
+func TestOnlyAnEmptyFallbackSpecIsAClear(t *testing.T) {
+	if !(FallbackSpec{}).Cleared() {
+		t.Fatal("the zero fallback spec no longer clears a route")
+	}
+	for name, spec := range map[string]FallbackSpec{
+		"upstream":    {Upstream: "http://backup.invalid"},
+		"auth header": {AuthHeader: "x-api-key"},
+		"auth env":    {AuthEnv: "BACKUP_KEY"},
+		"auth prefix": {AuthPrefix: "Bearer "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if spec.Cleared() {
+				t.Fatal("a partially populated fallback spec was treated as a clear")
+			}
+		})
+	}
+}
+
 func TestAForbiddenFallbackUpstreamIsRefused(t *testing.T) {
 	// The same check the primary gets, for the same reason: a fallback is the
 	// second place this gateway would attach the shared credential and connect.

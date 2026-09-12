@@ -290,12 +290,17 @@ type FallbackSpec struct {
 }
 
 // Cleared reports whether this spec removes the fallback.
-func (f FallbackSpec) Cleared() bool { return f.Upstream == "" }
+func (f FallbackSpec) Cleared() bool {
+	return f.Upstream == "" && f.AuthHeader == "" && f.AuthEnv == "" && f.AuthPrefix == ""
+}
 
 // SetRouteFallback sets or clears one route's fallback upstream. Passing a zero
 // FallbackSpec clears it, which is how a route goes back to single-upstream
 // behaviour without being deleted and recreated.
 func (s *Store) SetRouteFallback(ctx context.Context, id int64, spec FallbackSpec) error {
+	if spec.Upstream == "" && !spec.Cleared() {
+		return Invalid("fallback credentials need a fallback upstream")
+	}
 	if !spec.Cleared() {
 		// The route's own upstream and retry count decide whether this
 		// fallback is legal, so they are read rather than assumed: the
