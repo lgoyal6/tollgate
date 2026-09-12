@@ -207,7 +207,7 @@ flowchart LR
 3. **AccessLog / Metrics** – structured JSON via `log/slog` (sampled under load) and RED metrics per tenant/route/method/status-class.
 4. **Tracing** – extracts W3C `traceparent`, opens a server span, propagates to upstreams (visible end-to-end in Jaeger).
 5. **Auth** – `tg_<keyid>_<secret>` from `Authorization: Bearer` or `X-API-Key`. SHA-256 of the secret compared in constant time. Key states: `active` → `grace` (rotation window, responses carry `X-Api-Key-Deprecated`) → `revoked`. The gateway credential is stripped before forwarding.
-6. **Router** – longest-prefix match over the tenant's routes from the config snapshot; enforces per-route required scope (403).
+6. **Router** – longest-prefix match over the tenant's routes from the config snapshot; enforces per-route required scope (403); builds the route's ordered upstream plan (primary, then at most one fallback) and checks every candidate against the upstream allowlist.
 7. **RateLimit** – one Redis round trip running the tenant's algorithm atomically; sets `X-RateLimit-*`, 429 + `Retry-After` on rejection. Redis outage ⇒ configurable fail-open (default) with an alertable error counter.
 8. **Proxy** – hand-rolled forwarder: injects the route's upstream credential from the gateway environment (never from the database, never from the caller), per-upstream circuit breaker, retries with full-jitter backoff for idempotent methods on 502/503/504 and transport errors, optional hedging, streaming with eager flush for unknown-length bodies.
 
@@ -243,6 +243,82 @@ Both are single Lua scripts (`internal/ratelimit/*.lua`) executed via `EVALSHA`:
 - **Hedging** (`hedge.go`, behind `HEDGING_ENABLED` + per-route flag): fire one backup request if the primary hasn't answered within the route's hedge delay; first usable response wins, loser is cancelled and drained. Spends upstream capacity only on the slow tail.
 - **Graceful shutdown**: SIGTERM ⇒ readiness flips false ⇒ `DRAIN_DELAY` for endpoint propagation ⇒ `http.Server.Shutdown` waits for in-flight requests (bounded by `SHUTDOWN_TIMEOUT`) ⇒ flush traces, close pools. `terminationGracePeriodSeconds` is sized to fit the whole sequence.
 - Request bodies up to `MAX_BODY_BUFFER_BYTES` (1 MiB) are buffered so retries/hedges can replay them; larger or unknown-length bodies stream once with no re-send.
+
+### One optional fallback upstream per route
+
+A route may name a second upstream. The router turns the row into an ordered
+**route plan** - primary, then at most one fallback - and the proxy walks it.
+
+```bash
+tollgate-admin add-route -tenant acme -prefix /api/ -upstream http://upstream-a:9000 \
+    -retries 1 -fallback http://upstream-b:9000 \
+    -fallback-auth-header x-api-key -fallback-auth-env BACKUP_API_KEY
+
+tollgate-admin set-fallback   -route 3 -upstream http://upstream-b:9000
+tollgate-admin clear-fallback -route 3
+```
+
+**Router versus proxy.** The plan is routing metadata and nothing else: which
+upstreams, in what order, and the *name* of the environment variable each one's
+credential comes from. The proxy stays the only thing that reads or buffers a
+request body, injects a credential, opens a connection, decides whether bytes
+are replayable, retries, fails over, or streams a response. That split is why
+the order can be logged and traced without a body or a secret going anywhere
+near a log line.
+
+**One fallback, not a routing policy.** No scoring, no weighting, no plugin
+point, no arbitrary-length candidate graph. One optional fallback is enough to
+survive a single upstream refusing service and small enough that the order is
+readable from one database row.
+
+**When it fails over.** All of these, together:
+
+- the method is idempotent (GET/HEAD/OPTIONS) **and** the body was buffered;
+- the client is still there and the request is inside its total deadline;
+- no response bytes have gone to the client yet;
+- an attempt is still available inside the route's existing ceiling;
+- and the primary failed with a transport error, an open circuit breaker, or a
+  502, 503 or 504.
+
+**When it does not.** POST never fails over - an LLM completion may already have
+been generated and billed upstream, and "it returned 503" is not evidence that
+it did nothing. Nor does an unbuffered or over-limit body, a 401/403/429 or any
+other 4xx, a response that has started streaming, a cancelled client, or a
+credential the gateway does not have. Hedging is unchanged and races the primary
+only.
+
+**One ceiling, one hold.** A fallback is an attempt spent out of the route's
+existing `1 + retry_max` budget, not a second retry budget - one attempt of it
+is reserved so the fallback can actually be reached, which is why a fallback
+needs `retries >= 1` and is refused without it. Budget is untouched: one spend
+hold and one settlement per request, however many upstreams it touched.
+
+**Credentials are per candidate.** The fallback names its own header and
+environment variable. A fallback is usually a different provider, and one shared
+env var is how one provider's key reaches another one. Existing rows have no
+fallback and need no operator action.
+
+**Measured locally** (`go test ./internal/proxy -run TestOrderedRoutePlanEvaluation -v`,
+300 requests per arm, written to `results/route-plan-eval.json`):
+
+| arm | success | attempts/req | fallbacks | p50 | p95 | p99 |
+|---|---|---|---|---|---|---|
+| failing primary, single upstream | 0.00% | 2.00 | 0 | 14.756ms | 25.143ms | 26.273ms |
+| failing primary, ordered plan | 100.00% | 2.00 | 300 | 0.151ms | 0.335ms | 0.486ms |
+| all healthy, single upstream | 100.00% | 1.00 | 0 | 0.041ms | 0.061ms | 0.183ms |
+| all healthy, ordered plan | 100.00% | 1.00 | 0 | 0.040ms | 0.053ms | 0.106ms |
+
+Zero body-integrity failures in every arm. With a healthy primary the fallback
+is contacted zero times and costs the same one attempt per request, so the
+overhead when it is not needed is nothing measurable. The latency gap in the
+failing case is the retry backoff: the single-upstream arm waits and asks the
+same dead upstream again, while the plan goes straight to a different one.
+
+Two httptest servers and a proxy in one process on one machine. The "outage" is
+a handler that was told to return 503. This is not a datacenter, a provider, a
+network partition or a real failover, the success rates are arithmetic about a
+scripted condition rather than evidence about availability, and it says nothing
+at all about LLM traffic, which is POST and never fails over.
 
 ## Abuse limits and backpressure
 
