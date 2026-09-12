@@ -531,6 +531,12 @@ func (s *Server) handleAddRoute(_ http.ResponseWriter, r *http.Request) (any, in
 		AuthHeader    string `json:"auth_header"`
 		AuthEnv       string `json:"auth_env"`
 		AuthPrefix    string `json:"auth_prefix"`
+		// The route's one optional fallback. Omit it and the route has a
+		// single upstream, exactly as before this field existed.
+		Fallback           string `json:"fallback"`
+		FallbackAuthHeader string `json:"fallback_auth_header"`
+		FallbackAuthEnv    string `json:"fallback_auth_env"`
+		FallbackAuthPrefix string `json:"fallback_auth_prefix"`
 	}
 	if err := decode(r, &req); err != nil {
 		return nil, http.StatusBadRequest, err
@@ -545,6 +551,8 @@ func (s *Server) handleAddRoute(_ http.ResponseWriter, r *http.Request) (any, in
 		HedgeDelay: 50 * time.Millisecond, RequiredScope: req.RequiredScope,
 		UpstreamAuthHeader: req.AuthHeader, UpstreamAuthEnv: req.AuthEnv,
 		UpstreamAuthPrefix: req.AuthPrefix,
+		FallbackUpstream:   req.Fallback, FallbackAuthHeader: req.FallbackAuthHeader,
+		FallbackAuthEnv: req.FallbackAuthEnv, FallbackAuthPrefix: req.FallbackAuthPrefix,
 	}
 	if err := s.store.AddRoute(r.Context(), spec); err != nil {
 		return nil, http.StatusBadRequest, err

@@ -168,6 +168,13 @@ type RouteSpec struct {
 	UpstreamAuthHeader string
 	UpstreamAuthEnv    string
 	UpstreamAuthPrefix string
+
+	// The route's one optional fallback. Empty FallbackUpstream means the
+	// route has a single upstream, which is what every existing row says.
+	FallbackUpstream   string
+	FallbackAuthHeader string
+	FallbackAuthEnv    string
+	FallbackAuthPrefix string
 }
 
 // Validate mirrors the routes table's constraints plus the invariant that
@@ -188,7 +195,19 @@ func (r RouteSpec) Validate() error {
 			return Invalid("upstream is refused: %s", reason)
 		}
 	}
-	for _, value := range []string{r.PathPrefix, r.Upstream, r.RequiredScope, r.UpstreamAuthHeader, r.UpstreamAuthEnv, r.UpstreamAuthPrefix} {
+	// The fallback is checked the same way and for the same reason: it is the
+	// second place this gateway would send the credential it holds on
+	// everybody's behalf.
+	if r.FallbackUpstream != "" {
+		if u, err := url.Parse(r.FallbackUpstream); err == nil {
+			if reason, forbidden := ForbiddenUpstream(u.Host); forbidden {
+				return Invalid("fallback upstream is refused: %s", reason)
+			}
+		}
+	}
+	for _, value := range []string{r.PathPrefix, r.Upstream, r.RequiredScope,
+		r.UpstreamAuthHeader, r.UpstreamAuthEnv, r.UpstreamAuthPrefix,
+		r.FallbackUpstream, r.FallbackAuthHeader, r.FallbackAuthEnv, r.FallbackAuthPrefix} {
 		if strings.ContainsRune(value, 0) {
 			return Invalid("route fields cannot contain NUL")
 		}
@@ -205,6 +224,29 @@ func (r RouteSpec) Validate() error {
 	if (r.UpstreamAuthHeader == "") != (r.UpstreamAuthEnv == "") {
 		return Invalid("upstream auth header and env must be set together")
 	}
+	if (r.FallbackAuthHeader == "") != (r.FallbackAuthEnv == "") {
+		return Invalid("fallback auth header and env must be set together")
+	}
+	// Credentials without an upstream to send them to are a row somebody will
+	// later read as "the fallback is configured".
+	if r.FallbackUpstream == "" && (r.FallbackAuthHeader != "" || r.FallbackAuthEnv != "" || r.FallbackAuthPrefix != "") {
+		return Invalid("fallback credentials need a fallback upstream")
+	}
+	if r.FallbackUpstream != "" && r.RetryMax < 1 {
+		// A fallback is an attempt spent out of the route's existing ceiling,
+		// which is 1+retries. A route with no retries has exactly one attempt
+		// and the primary takes it, so this row would describe a standby that
+		// can never be reached. Refusing it here is the difference between an
+		// error at configuration time and an outage the standby did not cover.
+		return Invalid("a fallback needs retries of at least 1: the fallback is an attempt " +
+			"inside the route's existing attempt ceiling, and a route with no retries has " +
+			"only the one attempt, which the primary takes")
+	}
+	if r.FallbackUpstream != "" && r.FallbackUpstream == r.Upstream {
+		// Not a safety property, an honesty one. A fallback that is the
+		// primary buys nothing and reads in the console as redundancy.
+		return Invalid("fallback upstream must differ from the primary upstream")
+	}
 	return nil
 }
 
@@ -218,14 +260,72 @@ func (s *Store) AddRoute(ctx context.Context, spec RouteSpec) error {
 	_, err := s.Pool.Exec(ctx, `
 		INSERT INTO routes (tenant_id, path_prefix, upstream_url, strip_prefix, timeout_ms,
 		                    retry_max, hedge_enabled, hedge_delay_ms, required_scope,
-		                    upstream_auth_header, upstream_auth_env, upstream_auth_prefix)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12)`,
+		                    upstream_auth_header, upstream_auth_env, upstream_auth_prefix,
+		                    fallback_upstream_url, fallback_auth_header, fallback_auth_env,
+		                    fallback_auth_prefix)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12, $13, $14, $15, $16)`,
 		spec.TenantID, spec.PathPrefix, spec.Upstream, spec.StripPrefix, spec.Timeout.Milliseconds(),
 		spec.RetryMax, spec.HedgeEnabled, spec.HedgeDelay.Milliseconds(), spec.RequiredScope,
-		spec.UpstreamAuthHeader, spec.UpstreamAuthEnv, spec.UpstreamAuthPrefix)
+		spec.UpstreamAuthHeader, spec.UpstreamAuthEnv, spec.UpstreamAuthPrefix,
+		spec.FallbackUpstream, spec.FallbackAuthHeader, spec.FallbackAuthEnv, spec.FallbackAuthPrefix)
 	if err != nil {
 		return asClientError(fmt.Errorf("inserting route %s%s: %w", spec.TenantID, spec.PathPrefix, err),
 			"that route already exists", "no such tenant")
+	}
+	return nil
+}
+
+// FallbackSpec is the one optional fallback for an existing route. A zero
+// value clears it.
+//
+// Set and clear are one call rather than two, because the pair "which upstream"
+// and "where its credential comes from" has to move together: a fallback left
+// pointing at a new provider with the old provider's env var is the failure
+// this shape makes unrepresentable.
+type FallbackSpec struct {
+	Upstream   string
+	AuthHeader string
+	AuthEnv    string
+	AuthPrefix string
+}
+
+// Cleared reports whether this spec removes the fallback.
+func (f FallbackSpec) Cleared() bool { return f.Upstream == "" }
+
+// SetRouteFallback sets or clears one route's fallback upstream. Passing a zero
+// FallbackSpec clears it, which is how a route goes back to single-upstream
+// behaviour without being deleted and recreated.
+func (s *Store) SetRouteFallback(ctx context.Context, id int64, spec FallbackSpec) error {
+	if !spec.Cleared() {
+		// The route's own upstream and retry count decide whether this
+		// fallback is legal, so they are read rather than assumed: the
+		// attempt ceiling is 1+retries and the fallback has to fit inside it.
+		var primary string
+		var retryMax int
+		row := s.Pool.QueryRow(ctx, `SELECT upstream_url, retry_max FROM routes WHERE id = $1`, id)
+		if err := row.Scan(&primary, &retryMax); err != nil {
+			return ErrNotFound
+		}
+		check := RouteSpec{
+			TenantID: "x", PathPrefix: "/", Upstream: primary, RetryMax: retryMax,
+			Timeout: time.Second, HedgeDelay: time.Second,
+			FallbackUpstream: spec.Upstream, FallbackAuthHeader: spec.AuthHeader,
+			FallbackAuthEnv: spec.AuthEnv, FallbackAuthPrefix: spec.AuthPrefix,
+		}
+		if err := check.Validate(); err != nil {
+			return err
+		}
+	}
+	tag, err := s.Pool.Exec(ctx, `
+		UPDATE routes SET fallback_upstream_url = $2, fallback_auth_header = $3,
+		                  fallback_auth_env = $4, fallback_auth_prefix = $5
+		WHERE id = $1`,
+		id, spec.Upstream, spec.AuthHeader, spec.AuthEnv, spec.AuthPrefix)
+	if err != nil {
+		return fmt.Errorf("setting fallback on route %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

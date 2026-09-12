@@ -103,13 +103,20 @@ type RouteInfo struct {
 	RequiredScope  string `json:"required_scope,omitempty"`
 	CredentialFrom string `json:"credential_from,omitempty"`
 	CredentialSet  bool   `json:"credential_set"`
+
+	// The route's one optional fallback, by upstream and by the *name* of the
+	// environment variable its credential comes from. Same rule as the
+	// primary: a name is safe to display, a value never leaves the gateway.
+	Fallback           string `json:"fallback,omitempty"`
+	FallbackCredential string `json:"fallback_credential_from,omitempty"`
 }
 
 // ListRoutes returns every route, or just one tenant's when tenantID is set.
 func (s *Store) ListRoutes(ctx context.Context, tenantID string) ([]RouteInfo, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT id, tenant_id, path_prefix, upstream_url, strip_prefix, timeout_ms,
-		       retry_max, coalesce(required_scope, ''), upstream_auth_env, upstream_auth_header
+		       retry_max, coalesce(required_scope, ''), upstream_auth_env, upstream_auth_header,
+		       fallback_upstream_url, fallback_auth_env
 		FROM routes
 		WHERE ($1 = '' OR tenant_id = $1)
 		ORDER BY tenant_id, length(path_prefix) DESC`, tenantID)
@@ -123,7 +130,8 @@ func (s *Store) ListRoutes(ctx context.Context, tenantID string) ([]RouteInfo, e
 		var r RouteInfo
 		var authEnv, authHeader string
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.PathPrefix, &r.Upstream, &r.StripPrefix,
-			&r.TimeoutMS, &r.RetryMax, &r.RequiredScope, &authEnv, &authHeader); err != nil {
+			&r.TimeoutMS, &r.RetryMax, &r.RequiredScope, &authEnv, &authHeader,
+			&r.Fallback, &r.FallbackCredential); err != nil {
 			return nil, fmt.Errorf("scanning route: %w", err)
 		}
 		r.CredentialFrom = authEnv
