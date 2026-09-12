@@ -25,7 +25,11 @@ type Info struct {
 	KeyDeprecated bool
 	Attempts      int
 	Hedged        bool
-	Error         string
+	// Fallback records that the request was served by the route's fallback
+	// upstream rather than its primary. Distinct from Hedged: a hedge is two
+	// attempts at one upstream, this is one attempt each at two.
+	Fallback bool
+	Error    string
 }
 
 // RouteLabel returns a bounded-cardinality route identifier for metrics.
@@ -55,6 +59,7 @@ const (
 	infoKey ctxKey = iota
 	tenantKey
 	routeKey
+	planKey
 	keyKey
 	decodedBodyKey
 )
@@ -88,6 +93,21 @@ func WithRoute(ctx context.Context, r *store.Route) context.Context {
 func RouteFrom(ctx context.Context) *store.Route {
 	r, _ := ctx.Value(routeKey).(*store.Route)
 	return r
+}
+
+// WithPlan carries the ordered upstream plan the router decided on.
+//
+// Routing metadata only: which upstreams, in what order, and where each one's
+// credential is named. No request bytes and no secrets pass through here, and
+// the proxy is still the only thing that reads a body or opens a connection.
+func WithPlan(ctx context.Context, p *store.RoutePlan) context.Context {
+	return context.WithValue(ctx, planKey, p)
+}
+
+// PlanFrom returns the plan, or nil when only a route was installed.
+func PlanFrom(ctx context.Context) *store.RoutePlan {
+	p, _ := ctx.Value(planKey).(*store.RoutePlan)
+	return p
 }
 
 func WithKey(ctx context.Context, k *store.APIKey) context.Context {

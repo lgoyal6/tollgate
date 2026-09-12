@@ -394,11 +394,12 @@ func Router(snapshots func() *store.Snapshot) Middleware {
 				writeJSONError(w, info, http.StatusServiceUnavailable, "gateway warming up")
 				return
 			}
-			route, ok := snap.MatchRoute(tenant.ID, r.URL.Path)
+			plan, ok := snap.PlanRoute(tenant.ID, r.URL.Path)
 			if !ok {
 				writeJSONError(w, info, http.StatusNotFound, "no route for path")
 				return
 			}
+			route := plan.Route
 			if !auth.HasScope(key, route.RequiredScope) {
 				writeJSONError(w, info, http.StatusForbidden, "key lacks required scope")
 				return
@@ -411,21 +412,36 @@ func Router(snapshots func() *store.Snapshot) Middleware {
 			// arrive in the snapshot without passing it. This is the last
 			// point before the gateway would attach the shared provider
 			// credential and send it somewhere.
-			if reason, forbidden := store.ForbiddenUpstream(route.Upstream.Host); forbidden {
+			//
+			// Every candidate, not just the primary. A fallback is an upstream
+			// the gateway will attach the shared credential to and connect to,
+			// so a fallback pointed at the metadata service is the same bug
+			// with one more step in front of it. A refused candidate refuses
+			// the whole plan rather than being quietly dropped: silently
+			// serving a request from a route whose fallback is unusable would
+			// hide the misconfiguration until the day it was needed.
+			for _, candidate := range plan.Candidates {
+				reason, forbidden := store.ForbiddenUpstream(candidate.Upstream.Host)
+				if !forbidden {
+					continue
+				}
 				secops.From(r.Context()).Emit(r.Context(), secops.Event{
 					Type:    secops.EventSSRFRejected,
 					Control: secops.ControlUpstreamAllowlist,
 					Outcome: secops.OutcomeRejected,
 					Evidence: map[string]string{
-						"upstream_host": route.Upstream.Host,
+						"upstream_host": candidate.Upstream.Host,
 						"reason":        reason,
 						"route_id":      strconv.FormatInt(route.ID, 10),
+						"candidate":     candidate.Role(),
 					},
 				})
 				writeJSONError(w, info, http.StatusBadGateway, "route upstream is refused by the gateway")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(reqctx.WithRoute(r.Context(), route)))
+			ctx := reqctx.WithRoute(r.Context(), route)
+			ctx = reqctx.WithPlan(ctx, plan)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
