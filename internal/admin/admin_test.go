@@ -136,36 +136,43 @@ func TestConsoleServesWithoutToken(t *testing.T) {
 	}
 }
 
-// TestConsoleStartsLocked pins a defect the first version shipped with: a
-// duplicated class attribute meant the header actions rendered before the
-// operator had authenticated, so the page looked unlocked when it was not.
-func TestConsoleStartsLocked(t *testing.T) {
+// TestConsoleBootstrapsTheVueApp pins the security boundary between the public
+// shell and the authenticated API. The shell carries only its mount path and
+// the compiled application; the application starts at its token gate.
+func TestConsoleBootstrapsTheVueApp(t *testing.T) {
 	h := serve(t, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", MountPath+"/", nil))
 	body := rec.Body.String()
 
-	for _, id := range []string{"hdr-actions", "app"} {
-		// The element must carry the hide class in the same tag as its id.
-		i := strings.Index(body, `id="`+id+`"`)
-		if i < 0 {
-			t.Fatalf("console has no element with id %q", id)
-		}
-		start := strings.LastIndex(body[:i], "<")
-		end := i + strings.Index(body[i:], ">")
-		tag := body[start:end]
-		if !strings.Contains(tag, "hide") {
-			t.Fatalf("%q renders visible before unlock: %s", id, tag)
-		}
+	if !strings.Contains(body, `id="app" v-cloak`) {
+		t.Fatal("console shell does not hide the Vue root until the application mounts")
 	}
-	// A tag with two class attributes silently drops the second one.
-	if strings.Contains(body, `class="row" id="hdr-actions" class=`) {
-		t.Fatal("duplicate class attribute on hdr-actions")
+	if !strings.Contains(body, MountPath+`/assets/console.js`) {
+		t.Fatal("console shell does not load the embedded Vue bundle")
 	}
-	// The favicon is inlined so the browser does not request /favicon.ico
-	// from the tenant listener, which answers 401.
 	if !strings.Contains(body, `rel="icon"`) {
 		t.Fatal("console has no inline favicon; the browser will 401 on /favicon.ico")
+	}
+}
+
+func TestConsoleBundleIsPublicStaticCode(t *testing.T) {
+	h := serve(t, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", MountPath+"/assets/console.js", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("console bundle returned %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Fatalf("Content-Type = %q, want text/javascript", ct)
+	}
+	body := rec.Body.String()
+	if len(body) < 1000 {
+		t.Fatalf("console bundle is unexpectedly small: %d bytes", len(body))
+	}
+	if strings.Contains(body, testToken) {
+		t.Fatal("console bundle leaked the admin token")
 	}
 }
 

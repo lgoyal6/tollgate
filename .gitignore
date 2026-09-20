@@ -11,6 +11,16 @@ deploy/terraform/terraform.tfstate*
 # graphify knowledge graph (local index, not source)
 graphify-out/
 
+# Vue operator-console dependencies and task-local npm caches. The compiled
+# console bundle is committed under internal/admin/assets so Go builds remain
+# self-contained.
+web/admin/node_modules/
+web/admin/_logs/
+web/admin/_update-notifier-last-checked
+_cacache/
+_logs/
+_update-notifier-last-checked
+
 # Same reasoning as .dockerignore: the provider credential belongs in the
 # process environment, never in a file next to the code.
 .env

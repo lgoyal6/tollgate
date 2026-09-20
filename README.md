@@ -140,10 +140,12 @@ and it authenticates with the admin token rather than a tenant key. Tokens
 shorter than 16 characters are refused at startup: it is the only thing in
 front of key issuance.
 
-The page itself is a static shell with no data baked in. The operator pastes
-the token into the tab, it lives in memory for that tab only, and every byte of
-config arrives over the authenticated API. The same operations are still
-available as a CLI (`tollgate-admin create-tenant|add-route|issue-key|
+The Vue operator console is compiled into the Go binary with no data or secret
+baked in. The operator pastes the token into the tab, it lives in memory for
+that tab only, and every byte of config arrives over the authenticated API.
+Cutoff, rotation, revocation, and route deletion require an explicit confirmation.
+The same operations are still available as a CLI (`tollgate-admin
+create-tenant|add-route|issue-key|
 rotate-key|revoke-key|list`); both surfaces call the same `internal/store`
 writers, so they cannot drift.
 
@@ -453,6 +455,7 @@ internal/proxy         hand-rolled forwarding engine
 internal/middleware    the request pipeline
 internal/store         pgx store, immutable snapshots, LISTEN/NOTIFY watcher, config writers
 internal/admin         management API + console + openapi.json (only built when ADMIN_TOKEN is set)
+web/admin              typed Vue source and component/API workflow tests for the embedded console
 internal/auth          key format, hashing, verification, scopes, rotation
 internal/jwt           JWS verification, JWKS cache, claims, RFC 8705 binding
 internal/secops        security events, append-only timeline, correlator, detectors, replay harness
