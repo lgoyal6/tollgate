@@ -2,12 +2,20 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # ------------------------------------------------------------------ build ---
-.PHONY: build test test-race test-integration schemathesis cloud-run-rollout-test vet lint clean
+.PHONY: build console console-test test test-race test-integration schemathesis cloud-run-rollout-test vet lint clean
 
 build: ## Build all binaries into ./bin
 	go build -o bin/gateway ./cmd/gateway
 	go build -o bin/tollgate-admin ./cmd/tollgate-admin
 	go build -o bin/upstream ./cmd/upstream
+
+console: ## Type-check and compile the Vue operator console into the Go binary
+	npm --prefix web/admin ci
+	npm --prefix web/admin run build
+
+console-test: ## Exercise authenticated and destructive operator workflows
+	npm --prefix web/admin ci
+	npm --prefix web/admin test
 
 test: ## Unit tests
 	go test ./...
@@ -28,7 +36,7 @@ vet:
 	go vet ./...
 
 clean:
-	rm -rf bin loadtest/results
+	rm -rf bin loadtest/results web/admin/node_modules
 
 # ------------------------------------------------------------- local dev ---
 .PHONY: up down seed logs demo-hot-reload

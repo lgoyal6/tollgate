@@ -425,6 +425,36 @@
         }
       }
     },
+    "/assets/console.js": {
+      "get": {
+        "operationId": "getConsoleBundle",
+        "summary": "The compiled Vue operator console.",
+        "description": "A static application bundle with no configuration or credentials embedded in it. The admin token remains in page memory and tenant data is loaded from the authenticated JSON API.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "the compiled console bundle",
+            "content": {
+              "text/javascript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "the bundle is GET only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/overview": {
       "get": {
         "operationId": "getOverview",

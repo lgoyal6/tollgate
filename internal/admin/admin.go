@@ -37,7 +37,7 @@ import (
 // cannot shadow it with a route of their own.
 const MountPath = "/_admin"
 
-//go:embed console.html
+//go:embed console.html assets/console.js
 var assets embed.FS
 
 // Usage reports per-tenant traffic counters for this process.
@@ -71,8 +71,9 @@ type Server struct {
 	logger   *slog.Logger
 	reloader Reloader
 
-	console *template.Template
-	mux     *http.ServeMux
+	console   *template.Template
+	consoleJS []byte
+	mux       *http.ServeMux
 }
 
 // New builds the management handler. It returns nil when token is empty,
@@ -92,7 +93,11 @@ func New(st *store.Store, usage Usage, token string, logger *slog.Logger, reload
 	if err != nil {
 		return nil, fmt.Errorf("parsing console template: %w", err)
 	}
-	s := &Server{store: st, usage: usage, token: token, logger: logger, reloader: reloader, console: tmpl}
+	consoleJS, err := assets.ReadFile("assets/console.js")
+	if err != nil {
+		return nil, fmt.Errorf("reading console bundle: %w", err)
+	}
+	s := &Server{store: st, usage: usage, token: token, logger: logger, reloader: reloader, console: tmpl, consoleJS: consoleJS}
 	s.routes()
 	return s, nil
 }
@@ -138,6 +143,7 @@ func (s *Server) operations() []operation {
 		// bare "/" it would also answer for every unmatched path, which is
 		// how an unknown endpoint came to reply in text/plain.
 		{Method: "GET", Path: "/{$}", raw: s.handleConsole},
+		{Method: "GET", Path: "/assets/console.js", raw: s.handleConsoleJS},
 	}, s.apiOperations()...)
 }
 
@@ -341,6 +347,15 @@ func (s *Server) handleConsole(w http.ResponseWriter, _ *http.Request) {
 	if err := s.console.Execute(w, map[string]string{"Mount": MountPath}); err != nil {
 		s.logger.Error("rendering console", "err", err)
 	}
+}
+
+// handleConsoleJS serves the pinned Vue application compiled into the Go
+// binary. It carries no tenant data and no token; both enter only at runtime.
+// The filename is stable, so clients must revalidate it after a deployment.
+func (s *Server) handleConsoleJS(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(s.consoleJS)
 }
 
 // overview is everything the console needs in one round trip.
