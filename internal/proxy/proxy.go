@@ -102,12 +102,12 @@ var errCredentialMissing = errors.New("proxy: upstream credential is not set")
 // shared key answers 401, the gateway relays it, and the only trace is a 4xx
 // in the same counter every tenant's own bad request lands in. The value is
 // never logged, only the fact and the route.
-func (p *Proxy) credentialFailure(route *store.Route, info *reqctx.Info, reason string, status int) {
-	p.metrics.UpstreamCredentialFailures.WithLabelValues(route.Upstream.Host, reason).Inc()
+func (p *Proxy) credentialFailure(route *store.Route, candidate store.Candidate, info *reqctx.Info, reason string, status int) {
+	p.metrics.UpstreamCredentialFailures.WithLabelValues(candidate.Upstream.Host, reason).Inc()
 	p.logger.Warn("the gateway's own upstream credential did not work",
-		"request_id", info.RequestID, "upstream", route.Upstream.Host,
-		"route", route.ID, "reason", reason, "upstream_status", status,
-		"credential_env", route.UpstreamAuthEnv)
+		"request_id", info.RequestID, "upstream", candidate.Upstream.Host,
+		"route", route.ID, "candidate", candidate.Role(), "reason", reason,
+		"upstream_status", status, "credential_env", candidate.AuthEnv)
 }
 
 // maxAttemptsHardCap bounds attempts regardless of what the route says.
@@ -123,11 +123,12 @@ const maxAttemptsHardCap = 5
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	info := reqctx.InfoFrom(r.Context())
-	route := reqctx.RouteFrom(r.Context())
-	if route == nil {
+	plan := p.planFor(r)
+	if plan == nil {
 		p.fail(w, info, http.StatusInternalServerError, "proxy reached without a route", nil)
 		return
 	}
+	route := plan.Route
 
 	// One deadline for the whole exchange, covering every attempt and every
 	// backoff between them. The route timeout alone bounds a single attempt,
@@ -149,15 +150,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var resp *http.Response
 	var release context.CancelFunc
+	var chosen store.Candidate
 	if p.hedgingEnabled && route.HedgeEnabled && canRepeat {
-		resp, release, err = p.doHedged(r, route, body)
+		// Hedging races two attempts at the primary and is left exactly as it
+		// was. Combining it with failover would mean two upstreams and two
+		// in-flight attempts sharing one ceiling, and the accounting for that
+		// is a bigger change than the one fallback this is.
+		chosen = plan.Primary()
+		resp, release, err = p.doHedged(r, plan, body)
 	} else {
-		resp, release, err = p.doWithRetries(r, route, body, canRepeat)
+		resp, chosen, release, err = p.doOrderedPlan(r, plan, body, canRepeat)
 	}
 	if err != nil {
 		status, msg := classifyError(err)
 		if errors.Is(err, errCredentialMissing) {
-			p.credentialFailure(route, info, "missing", status)
+			p.credentialFailure(route, chosen, info, "missing", status)
 		}
 		p.fail(w, info, status, msg, err)
 		return
@@ -169,7 +176,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// written yet. This is the only path on which an oversize response can be
 	// turned into a clean status rather than a truncated stream.
 	if p.limits.MaxResponseBytes > 0 && resp.ContentLength > p.limits.MaxResponseBytes {
-		p.metrics.ResponseTruncations.WithLabelValues(route.Upstream.Host).Inc()
+		p.metrics.ResponseTruncations.WithLabelValues(chosen.Upstream.Host).Inc()
 		p.fail(w, info, http.StatusBadGateway, "upstream response too large", limits.ErrResponseTooLarge)
 		return
 	}
@@ -179,9 +186,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// expired. The response is still relayed unchanged - the gateway is a
 	// proxy, and the upstream may equally be refusing the caller - but it stops
 	// being invisible.
-	if route.InjectsCredential() &&
+	if chosen.InjectsCredential() &&
 		(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-		p.credentialFailure(route, info, "rejected", resp.StatusCode)
+		p.credentialFailure(route, chosen, info, "rejected", resp.StatusCode)
 	}
 
 	// A request that only succeeded because a backup attempt overtook a slow
@@ -196,7 +203,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Hedged:   true,
 			Fallback: true,
 			Evidence: map[string]string{
-				"upstream_host":      route.Upstream.Host,
+				"upstream_host":      chosen.Upstream.Host,
 				"fallback_mechanism": "hedge",
 				"upstream_status":    strconv.Itoa(resp.StatusCode),
 			},
@@ -213,25 +220,46 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// body and no way to be told why. Stopping is still right: the
 		// alternative is relaying an unbounded stream the gateway pays egress
 		// on. The counter is what makes this visible.
-		p.metrics.ResponseTruncations.WithLabelValues(route.Upstream.Host).Inc()
+		p.metrics.ResponseTruncations.WithLabelValues(chosen.Upstream.Host).Inc()
 		info.Error = copyErr.Error()
 		p.logger.Warn("upstream response truncated at the size limit",
-			"request_id", info.RequestID, "upstream", route.Upstream.Host,
+			"request_id", info.RequestID, "upstream", chosen.Upstream.Host,
 			"limit", p.limits.MaxResponseBytes, "bytes", n)
 		return
 	}
 	if copyErr != nil && !errors.Is(copyErr, context.Canceled) {
 		// Headers are gone; nothing to send the client. Log and move on.
 		p.logger.Warn("response body copy interrupted",
-			"request_id", info.RequestID, "upstream", route.Upstream.Host,
+			"request_id", info.RequestID, "upstream", chosen.Upstream.Host,
 			"bytes", n, "error", copyErr)
 	}
 }
 
-// doWithRetries sends the request up to 1+RetryMax times. Non-idempotent or
-// unbuffered requests get exactly one attempt.
-func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, canRepeat bool) (*http.Response, context.CancelFunc, error) {
-	info := reqctx.InfoFrom(r.Context())
+// planFor returns the ordered plan for this request.
+//
+// The router installs one. A caller that installed only a route gets the plan
+// that route implies, which for a route with no fallback is a single candidate
+// -- the same decision the gateway made before plans existed. Deriving it here
+// cannot invent an upstream, and it means the proxy has exactly one shape of
+// input to reason about.
+func (p *Proxy) planFor(r *http.Request) *store.RoutePlan {
+	if plan := reqctx.PlanFrom(r.Context()); plan != nil {
+		return plan
+	}
+	if route := reqctx.RouteFrom(r.Context()); route != nil {
+		return store.PlanFor(route)
+	}
+	return nil
+}
+
+// attemptCeiling is the total number of upstream attempts this request may
+// make, across every candidate in its plan.
+//
+// One ceiling for the whole request, not one per upstream. A fallback is an
+// attempt spent inside the existing budget; giving it a fresh one would double
+// what a single request can do to the upstreams it touches, which is the
+// amplification maxAttemptsHardCap exists to prevent.
+func attemptCeiling(route *store.Route, canRepeat bool) int {
 	attempts := 1
 	if canRepeat && route.RetryMax > 0 {
 		attempts = 1 + route.RetryMax
@@ -239,35 +267,124 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 	if attempts > maxAttemptsHardCap {
 		attempts = maxAttemptsHardCap
 	}
+	return attempts
+}
+
+// candidateResult is what one upstream produced.
+//
+// transient distinguishes "here is the answer" from "here is a 502/503/504 I
+// have run out of retries for". The second is still relayable - it is what the
+// client would have received before failover existed - but it is also the one
+// shape of response that may be abandoned in favour of the next candidate.
+type candidateResult struct {
+	resp      *http.Response
+	cancel    context.CancelFunc
+	transient bool
+	err       error
+}
+
+// doOrderedPlan walks the plan's candidates in order, spending one shared
+// attempt budget across all of them.
+func (p *Proxy) doOrderedPlan(r *http.Request, plan *store.RoutePlan, body []byte, canRepeat bool) (*http.Response, store.Candidate, context.CancelFunc, error) {
+	info := reqctx.InfoFrom(r.Context())
+	ceiling := attemptCeiling(plan.Route, canRepeat)
+
+	// The primary's refusal, kept rather than discarded. Throwing it away
+	// before trying the fallback would be tidier, but it is the exact response
+	// the client received before this change, and a fallback that also fails
+	// would then turn a relayed 503 into a manufactured 502.
+	var held candidateResult
+	var heldBy store.Candidate
+	var lastErr error
+
+	for i, candidate := range plan.Candidates {
+		if i > 0 {
+			reason, ok := failoverReason(r, canRepeat, ceiling-info.Attempts, held, lastErr)
+			if !ok {
+				break
+			}
+			p.noteFailover(r, plan, candidate, reason)
+		}
+
+		allowed := ceiling - info.Attempts
+		if i == 0 && plan.HasFallback() && canRepeat && allowed > 1 {
+			// Hold one attempt of the shared ceiling back for the fallback.
+			//
+			// Without this the primary spends the whole budget retrying itself
+			// and the fallback is configuration that can never fire - which is
+			// worse than not having the feature, because the console says the
+			// route has a standby and it does not. The ceiling itself is
+			// untouched: this decides how the existing attempts are divided,
+			// not how many there are.
+			//
+			// Only when there is more than one to divide. A route whose
+			// ceiling is a single attempt gives it to the primary; reserving
+			// out of one would leave the primary with none and turn a
+			// misconfigured fallback into a route that contacts nothing.
+			allowed--
+		}
+
+		res := p.sendTo(r, plan, candidate, body, canRepeat, allowed)
+		switch {
+		case res.resp != nil && !res.transient:
+			drainClose(held)
+			info.Upstream = candidate.Upstream.Host
+			info.Fallback = candidate.Fallback
+			return res.resp, candidate, res.cancel, nil
+		case res.resp != nil && held.resp == nil:
+			held, heldBy = res, candidate
+		case res.resp != nil:
+			drainClose(res)
+		}
+		if res.err != nil {
+			lastErr = res.err
+		}
+	}
+
+	if held.resp != nil {
+		info.Upstream = heldBy.Upstream.Host
+		info.Fallback = heldBy.Fallback
+		return held.resp, heldBy, held.cancel, nil
+	}
+	return nil, plan.Primary(), nil, lastErr
+}
+
+// sendTo spends up to `allowed` attempts on one candidate.
+func (p *Proxy) sendTo(r *http.Request, plan *store.RoutePlan, candidate store.Candidate, body []byte, canRepeat bool, allowed int) candidateResult {
+	info := reqctx.InfoFrom(r.Context())
+	if allowed < 1 {
+		return candidateResult{err: fmt.Errorf("no attempts left for %s", candidate.Upstream.Host)}
+	}
 
 	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := 0; attempt < allowed; attempt++ {
 		if attempt > 0 {
 			p.metrics.Retries.Inc()
 			backoff := p.retry.Backoff(attempt)
 			select {
 			case <-r.Context().Done():
-				return nil, nil, r.Context().Err()
+				return candidateResult{err: r.Context().Err()}
 			case <-time.After(backoff):
 			}
 		}
 
-		actx, cancel := context.WithTimeout(r.Context(), route.Timeout)
-		resp, err := p.attempt(actx, r, route, body, attempt)
-		info.Attempts = attempt + 1
+		actx, cancel := context.WithTimeout(r.Context(), candidate.Timeout)
+		resp, err := p.attempt(actx, r, plan, candidate, body, attempt)
+		info.Attempts++
 
 		if err != nil {
 			cancel()
 			lastErr = err
-			p.recordAttemptFailure(r, route, attempt+1, attempts, err)
+			p.recordAttemptFailure(r, plan.Route, candidate, info.Attempts, allowed, err)
 			if errors.Is(err, errBreakerOpen) || errors.Is(err, errCredentialMissing) || !canRepeat {
 				// Breaker open, or a credential that is not in the
-				// environment: more attempts would hit the same wall.
-				return nil, nil, err
+				// environment: more attempts at this upstream would hit the
+				// same wall.
+				return candidateResult{err: err}
 			}
 			continue
 		}
-		if canRepeat && attempt < attempts-1 && resilience.RetryableStatus(resp.StatusCode) {
+		if canRepeat && attempt < allowed-1 && resilience.RetryableStatus(resp.StatusCode) {
 			// Transient upstream failure with budget left: drain a little so
 			// the connection can be reused, then retry.
 			io.CopyN(io.Discard, resp.Body, 4096) //nolint:errcheck
@@ -276,9 +393,74 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 			lastErr = fmt.Errorf("upstream returned %d", resp.StatusCode)
 			continue
 		}
-		return resp, cancel, nil
+		return candidateResult{
+			resp:      resp,
+			cancel:    cancel,
+			transient: resilience.RetryableStatus(resp.StatusCode),
+		}
 	}
-	return nil, nil, fmt.Errorf("all %d attempts failed: %w", attempts, lastErr)
+	return candidateResult{err: fmt.Errorf("all %d attempts failed: %w", allowed, lastErr)}
+}
+
+// failoverReason decides whether the next candidate may be tried, and says why
+// in a phrase fit for a log line.
+//
+// The list of things that do *not* qualify is the interesting half:
+//
+//   - a non-idempotent method, or a body that was never buffered. Both arrive
+//     here as canRepeat=false. An LLM completion is a POST that may already
+//     have been generated and billed upstream, and a stream the gateway did not
+//     keep cannot be sent a second time regardless of method.
+//   - a cancelled client context, or a request past its total deadline. Both
+//     show up as r.Context().Err(). Spending somebody else's upstream on a
+//     request nobody is waiting for is the cascade this gateway exists to
+//     avoid.
+//   - anything the upstream actually answered that is not 502, 503 or 504. A
+//     401 means the credential is wrong, a 403 means the caller may not, a 429
+//     means slow down, and a 400 means the request is bad. Asking a second
+//     provider the same question gets the same answer, one more time, from
+//     somebody else's quota.
+//   - a credential the gateway does not have. That is this gateway's own
+//     misconfiguration, and a second upstream is not the fix for it.
+//   - no attempts left inside the shared ceiling.
+func failoverReason(r *http.Request, canRepeat bool, remaining int, held candidateResult, lastErr error) (string, bool) {
+	if !canRepeat || remaining < 1 || r.Context().Err() != nil {
+		return "", false
+	}
+	switch {
+	case held.resp != nil && held.transient:
+		return "primary answered " + strconv.Itoa(held.resp.StatusCode), true
+	case errors.Is(lastErr, errBreakerOpen):
+		return "primary circuit breaker open", true
+	case errors.Is(lastErr, errCredentialMissing):
+		return "", false
+	case lastErr != nil:
+		return "primary transport failure", true
+	}
+	return "", false
+}
+
+// noteFailover records the switch. Hosts and a reason, never a credential, a
+// URL query or a byte of the request.
+func (p *Proxy) noteFailover(r *http.Request, plan *store.RoutePlan, to store.Candidate, reason string) {
+	info := reqctx.InfoFrom(r.Context())
+	p.logger.Info("failing over to the route's fallback upstream",
+		"request_id", info.RequestID, "route", plan.Route.ID,
+		"candidate_order", plan.Order(), "from", plan.Primary().Upstream.Host,
+		"to", to.Upstream.Host, "reason", reason, "attempts_used", info.Attempts)
+}
+
+// drainClose gives a response the gateway has decided not to relay back to the
+// connection pool, reading a little so the connection can be reused.
+func drainClose(res candidateResult) {
+	if res.resp == nil {
+		return
+	}
+	io.CopyN(io.Discard, res.resp.Body, 4096) //nolint:errcheck
+	res.resp.Body.Close()
+	if res.cancel != nil {
+		res.cancel()
+	}
 }
 
 // recordAttemptFailure records the two upstream failures that make up a
@@ -291,7 +473,7 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 // connection, a concurrency slot and a spend hold for its whole duration,
 // and a breaker refusal is the gateway declaring an upstream unusable for
 // every tenant sharing it.
-func (p *Proxy) recordAttemptFailure(r *http.Request, route *store.Route, attempt, allowed int, err error) {
+func (p *Proxy) recordAttemptFailure(r *http.Request, route *store.Route, candidate store.Candidate, attempt, allowed int, err error) {
 	var control string
 	var outcome secops.Outcome
 	switch {
@@ -308,23 +490,30 @@ func (p *Proxy) recordAttemptFailure(r *http.Request, route *store.Route, attemp
 		Outcome: outcome,
 		Attempt: attempt,
 		Evidence: map[string]string{
-			"upstream_host":    route.Upstream.Host,
+			"upstream_host":    candidate.Upstream.Host,
 			"attempts_allowed": strconv.Itoa(allowed),
-			"route_timeout_ms": strconv.FormatInt(route.Timeout.Milliseconds(), 10),
+			"route_timeout_ms": strconv.FormatInt(candidate.Timeout.Milliseconds(), 10),
 		},
 	})
 }
 
-// doHedged races a primary against one delayed backup attempt.
-func (p *Proxy) doHedged(r *http.Request, route *store.Route, body []byte) (*http.Response, context.CancelFunc, error) {
+// doHedged races two attempts at the plan's primary, one of them delayed.
+//
+// The fallback is not involved. Hedging is already two in-flight attempts at
+// one upstream; adding a second upstream to that would need both to share the
+// one attempt ceiling while racing, and the plan exists to make failover
+// legible rather than to make hedging cleverer.
+func (p *Proxy) doHedged(r *http.Request, plan *store.RoutePlan, body []byte) (*http.Response, context.CancelFunc, error) {
 	info := reqctx.InfoFrom(r.Context())
-	hctx, hcancel := context.WithTimeout(r.Context(), route.Timeout)
+	route := plan.Route
+	primary := plan.Primary()
+	hctx, hcancel := context.WithTimeout(r.Context(), primary.Timeout)
 
 	result, release := resilience.Hedge(hctx, route.HedgeDelay, func(actx context.Context, attempt int) (*http.Response, error) {
 		if attempt > 0 {
 			p.metrics.Hedges.Inc()
 		}
-		return p.attempt(actx, r, route, body, attempt)
+		return p.attempt(actx, r, plan, primary, body, attempt)
 	})
 
 	info.Hedged = result.Hedged
@@ -343,27 +532,38 @@ func (p *Proxy) doHedged(r *http.Request, route *store.Route, body []byte) (*htt
 	return result.Resp, func() { release(); hcancel() }, nil
 }
 
-// attempt performs one upstream exchange under the breaker.
-func (p *Proxy) attempt(ctx context.Context, r *http.Request, route *store.Route, body []byte, attempt int) (*http.Response, error) {
-	breaker := p.breakers.For(route.Upstream.Host)
+// attempt performs one upstream exchange with one candidate, under that
+// candidate's own breaker.
+//
+// The breaker is keyed on the host, so a fallback gets its own: a primary the
+// gateway has given up on must not drag its standby down with it, which is the
+// whole reason the standby is there.
+func (p *Proxy) attempt(ctx context.Context, r *http.Request, plan *store.RoutePlan, candidate store.Candidate, body []byte, attempt int) (*http.Response, error) {
+	breaker := p.breakers.For(candidate.Upstream.Host)
 	done, err := breaker.Allow()
 	if err != nil {
 		return nil, errBreakerOpen
 	}
 
-	out, err := p.outboundRequest(ctx, r, route, body)
+	out, err := p.outboundRequest(ctx, r, plan.Route, candidate, body)
 	if err != nil {
 		done(true) // request construction failure says nothing about upstream health
 		return nil, fmt.Errorf("building upstream request: %w", err)
 	}
 
-	ctx, span := p.tracer.Start(ctx, "proxy "+route.Upstream.Host,
+	ctx, span := p.tracer.Start(ctx, "proxy "+candidate.Upstream.Host,
 		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
 		oteltrace.WithAttributes(
 			attribute.String("http.method", out.Method),
 			attribute.String("http.url", redactedURL(out.URL)),
-			attribute.String("tollgate.upstream", route.Upstream.Host),
+			attribute.String("tollgate.upstream", candidate.Upstream.Host),
 			attribute.Int("tollgate.attempt", attempt),
+			// The order that was decided, and which element of it this is.
+			// Hosts only: redactedURL exists because several providers take
+			// their key in a query parameter, and a span attribute is the one
+			// place a secret escapes without anybody noticing.
+			attribute.String("tollgate.candidate_order", plan.Order()),
+			attribute.String("tollgate.candidate", candidate.Role()),
 		),
 	)
 	defer span.End()
@@ -378,8 +578,8 @@ func (p *Proxy) attempt(ctx context.Context, r *http.Request, route *store.Route
 	if err != nil {
 		done(false)
 		span.SetStatus(codes.Error, err.Error())
-		p.metrics.UpstreamDuration.WithLabelValues(route.Upstream.Host, "error").Observe(elapsed.Seconds())
-		return nil, fmt.Errorf("upstream %s: %w", route.Upstream.Host, err)
+		p.metrics.UpstreamDuration.WithLabelValues(candidate.Upstream.Host, "error").Observe(elapsed.Seconds())
+		return nil, fmt.Errorf("upstream %s: %w", candidate.Upstream.Host, err)
 	}
 
 	done(resp.StatusCode < 500)
@@ -387,13 +587,17 @@ func (p *Proxy) attempt(ctx context.Context, r *http.Request, route *store.Route
 	if resp.StatusCode >= 500 {
 		span.SetStatus(codes.Error, http.StatusText(resp.StatusCode))
 	}
-	p.metrics.UpstreamDuration.WithLabelValues(route.Upstream.Host, observability.CodeClass(resp.StatusCode)).Observe(elapsed.Seconds())
+	p.metrics.UpstreamDuration.WithLabelValues(candidate.Upstream.Host, observability.CodeClass(resp.StatusCode)).Observe(elapsed.Seconds())
 	return resp, nil
 }
 
-// outboundRequest clones the inbound request toward the upstream.
-func (p *Proxy) outboundRequest(ctx context.Context, r *http.Request, route *store.Route, body []byte) (*http.Request, error) {
-	target := targetURL(route, r.URL)
+// outboundRequest clones the inbound request toward one candidate upstream.
+//
+// This is the boundary the route plan does not cross. The plan says which
+// upstream and in what order; everything below - the body, the credential, the
+// connection - stays here, where it always was.
+func (p *Proxy) outboundRequest(ctx context.Context, r *http.Request, route *store.Route, candidate store.Candidate, body []byte) (*http.Request, error) {
+	target := targetURL(candidate.Upstream, route, r.URL)
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -419,12 +623,16 @@ func (p *Proxy) outboundRequest(ctx context.Context, r *http.Request, route *sto
 	// auth middleware already stripped; here the route's provider credential
 	// is attached from the gateway's environment. Missing configuration
 	// fails loud rather than forwarding unauthenticated.
-	if route.InjectsCredential() {
-		secret := os.Getenv(route.UpstreamAuthEnv)
+	//
+	// Per candidate, never shared. A fallback is usually a different provider
+	// with a different key, so reusing the primary's environment variable would
+	// send one provider's credential to another one.
+	if candidate.InjectsCredential() {
+		secret := os.Getenv(candidate.AuthEnv)
 		if secret == "" {
-			return nil, fmt.Errorf("route %d: %w", route.ID, errCredentialMissing)
+			return nil, fmt.Errorf("route %d %s: %w", route.ID, candidate.Role(), errCredentialMissing)
 		}
-		out.Header.Set(route.UpstreamAuthHeader, route.UpstreamAuthPrefix+secret)
+		out.Header.Set(candidate.AuthHeader, candidate.AuthPrefix+secret)
 	}
 
 	out.Header.Set("X-Forwarded-Host", r.Host)
@@ -469,9 +677,10 @@ func redactedURL(u *url.URL) string {
 	return safe.String()
 }
 
-// targetURL joins the upstream base with the (optionally stripped) path.
-func targetURL(route *store.Route, in *url.URL) *url.URL {
-	target := *route.Upstream
+// targetURL joins one candidate's base with the (optionally stripped) path.
+// Path handling is the route's, so both candidates see the same path.
+func targetURL(upstream *url.URL, route *store.Route, in *url.URL) *url.URL {
+	target := *upstream
 	path := in.EscapedPath()
 	if route.StripPrefix {
 		path = strings.TrimPrefix(path, strings.TrimSuffix(route.PathPrefix, "/"))

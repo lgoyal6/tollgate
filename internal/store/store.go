@@ -223,18 +223,22 @@ func (s *Store) LoadSnapshot(ctx context.Context) (*Snapshot, error) {
 	rows, err = tx.Query(ctx, `
 		SELECT id, tenant_id, path_prefix, upstream_url, strip_prefix, timeout_ms,
 		       retry_max, hedge_enabled, hedge_delay_ms, COALESCE(required_scope, ''),
-		       upstream_auth_header, upstream_auth_env, upstream_auth_prefix
+		       upstream_auth_header, upstream_auth_env, upstream_auth_prefix,
+		       fallback_upstream_url, fallback_auth_header, fallback_auth_env,
+		       fallback_auth_prefix
 		FROM routes`)
 	if err != nil {
 		return nil, fmt.Errorf("querying routes: %w", err)
 	}
 	for rows.Next() {
 		var r Route
-		var rawURL string
+		var rawURL, rawFallbackURL string
 		var timeoutMs, hedgeDelayMs int64
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.PathPrefix, &rawURL, &r.StripPrefix,
 			&timeoutMs, &r.RetryMax, &r.HedgeEnabled, &hedgeDelayMs, &r.RequiredScope,
-			&r.UpstreamAuthHeader, &r.UpstreamAuthEnv, &r.UpstreamAuthPrefix); err != nil {
+			&r.UpstreamAuthHeader, &r.UpstreamAuthEnv, &r.UpstreamAuthPrefix,
+			&rawFallbackURL, &r.FallbackAuthHeader, &r.FallbackAuthEnv,
+			&r.FallbackAuthPrefix); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scanning route: %w", err)
 		}
@@ -244,6 +248,16 @@ func (s *Store) LoadSnapshot(ctx context.Context) (*Snapshot, error) {
 			return nil, fmt.Errorf("route %d has invalid upstream_url %q: %w", r.ID, rawURL, err)
 		}
 		r.Upstream = u
+		if rawFallbackURL != "" {
+			// A fallback the gateway cannot parse is refused at load rather
+			// than at three in the morning, for the same reason the primary is.
+			f, err := url.Parse(rawFallbackURL)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("route %d has invalid fallback_upstream_url %q: %w", r.ID, rawFallbackURL, err)
+			}
+			r.FallbackUpstream = f
+		}
 		r.Timeout = time.Duration(timeoutMs) * time.Millisecond
 		r.HedgeDelay = time.Duration(hedgeDelayMs) * time.Millisecond
 		snap.routes[r.TenantID] = append(snap.routes[r.TenantID], &r)

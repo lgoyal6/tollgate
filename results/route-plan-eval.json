@@ -1,0 +1,94 @@
+{
+  "arms": [
+    {
+      "arm": "failing_primary_single_upstream",
+      "requests": 300,
+      "succeeded": 0,
+      "success_rate_percent": 0,
+      "upstream_attempts": 600,
+      "attempts_per_request": 2,
+      "fallbacks_used": 0,
+      "body_integrity_failures": 0,
+      "primary_hits": 600,
+      "fallback_hits": 0,
+      "p50_ms": 13.658,
+      "p95_ms": 25.447,
+      "p99_ms": 26.41
+    },
+    {
+      "arm": "failing_primary_ordered_plan",
+      "requests": 300,
+      "succeeded": 300,
+      "success_rate_percent": 100,
+      "upstream_attempts": 600,
+      "attempts_per_request": 2,
+      "fallbacks_used": 300,
+      "body_integrity_failures": 0,
+      "primary_hits": 300,
+      "fallback_hits": 300,
+      "p50_ms": 0.124,
+      "p95_ms": 0.611,
+      "p99_ms": 0.819
+    },
+    {
+      "arm": "all_healthy_single_upstream",
+      "requests": 300,
+      "succeeded": 300,
+      "success_rate_percent": 100,
+      "upstream_attempts": 300,
+      "attempts_per_request": 1,
+      "fallbacks_used": 0,
+      "body_integrity_failures": 0,
+      "primary_hits": 300,
+      "fallback_hits": 0,
+      "p50_ms": 0.037,
+      "p95_ms": 0.045,
+      "p99_ms": 0.106
+    },
+    {
+      "arm": "all_healthy_ordered_plan",
+      "requests": 300,
+      "succeeded": 300,
+      "success_rate_percent": 100,
+      "upstream_attempts": 300,
+      "attempts_per_request": 1,
+      "fallbacks_used": 0,
+      "body_integrity_failures": 0,
+      "primary_hits": 300,
+      "fallback_hits": 0,
+      "p50_ms": 0.035,
+      "p95_ms": 0.042,
+      "p99_ms": 0.131
+    }
+  ],
+  "differences": {
+    "body_integrity_failures_total": 0,
+    "extra_attempts_per_request_during_outage": 0,
+    "extra_attempts_per_request_when_all_healthy": 0,
+    "fallback_contacts_when_all_healthy": 0,
+    "p50_overhead_ms_when_all_healthy": -0.001999999999999995,
+    "p95_overhead_ms_when_all_healthy": -0.0029999999999999957,
+    "p99_overhead_ms_when_all_healthy": 0.02500000000000001,
+    "success_rate_points_gained_during_primary_outage": 100
+  },
+  "evidence_boundary": {
+    "not_claimed": [
+      "no datacenter, no provider, no network partition, no real failover",
+      "the outage is a handler that was told to return 503",
+      "latency is loopback wall-clock and is measured, not deterministic",
+      "says nothing about LLM traffic: that is POST, which never fails over",
+      "no availability claim: the success rates are arithmetic about a scripted condition"
+    ],
+    "runs_on": "one local host, in a single Go process",
+    "traffic": "synthetic scripted requests through the real proxy against httptest upstreams"
+  },
+  "generated_by": "go test ./internal/proxy -run TestOrderedRoutePlanEvaluation",
+  "harness": {
+    "attempt_ceiling": 2,
+    "body_integrity": "every request carries a payload only it uses; each upstream verifies what it received",
+    "breaker": "configured not to open inside a run, so the plan is what is measured",
+    "method": "GET with a buffered body: the only shape that is both idempotent and replayable",
+    "route_retry_max": 1
+  },
+  "requests_per_arm": 300
+}

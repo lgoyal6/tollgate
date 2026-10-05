@@ -49,6 +49,16 @@ type Route struct {
 	UpstreamAuthHeader string
 	UpstreamAuthEnv    string
 	UpstreamAuthPrefix string
+
+	// The route's one optional fallback upstream. Nil when the route has a
+	// single upstream, which is every route that existed before this column
+	// did. The fallback names its own credential: a fallback is usually a
+	// different provider, and sending one provider's key to another is the
+	// failure mode a shared env var would produce.
+	FallbackUpstream   *url.URL
+	FallbackAuthHeader string
+	FallbackAuthEnv    string
+	FallbackAuthPrefix string
 }
 
 // InjectsCredential reports whether this route is configured to attach an

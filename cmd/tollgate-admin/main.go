@@ -7,6 +7,9 @@
 //	tollgate-admin create-tenant -id acme -name "Acme" -algo token_bucket -rate 100 -burst 200
 //	tollgate-admin add-route     -tenant acme -prefix /api/ -upstream http://upstream-a:9000 [-strip] [-timeout 3s] [-retries 2] [-hedge] [-hedge-delay 50ms] [-scope read]
 //	                             [-auth-header x-api-key -auth-env ANTHROPIC_API_KEY [-auth-prefix "Bearer "]]
+//	                             [-fallback http://upstream-b:9000 [-fallback-auth-header x-api-key -fallback-auth-env BACKUP_API_KEY [-fallback-auth-prefix "Bearer "]]]
+//	tollgate-admin set-fallback  -route 3 -upstream http://upstream-b:9000 [-auth-header x-api-key -auth-env BACKUP_API_KEY [-auth-prefix "Bearer "]]
+//	tollgate-admin clear-fallback -route 3
 //	tollgate-admin issue-key     -tenant acme -scopes read,write
 //	tollgate-admin rotate-key    -key k1a2b3c4d5e6 -grace 24h
 //	tollgate-admin revoke-key    -key k1a2b3c4d5e6
@@ -36,7 +39,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: tollgate-admin <migrate|create-tenant|add-route|issue-key|rotate-key|revoke-key|list> [flags]")
+		return fmt.Errorf("usage: tollgate-admin <migrate|create-tenant|add-route|set-fallback|clear-fallback|issue-key|rotate-key|revoke-key|list> [flags]")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -59,6 +62,10 @@ func run(args []string) error {
 		return createTenant(ctx, st, args[1:])
 	case "add-route":
 		return addRoute(ctx, st, args[1:])
+	case "set-fallback":
+		return setFallback(ctx, st, args[1:])
+	case "clear-fallback":
+		return clearFallback(ctx, st, args[1:])
 	case "issue-key":
 		return issueKey(ctx, st, args[1:])
 	case "rotate-key":
@@ -114,6 +121,10 @@ func addRoute(ctx context.Context, st *store.Store, args []string) error {
 	authHeader := fs.String("auth-header", "", "upstream credential header to inject (e.g. x-api-key, Authorization)")
 	authEnv := fs.String("auth-env", "", "gateway env var holding the upstream credential")
 	authPrefix := fs.String("auth-prefix", "", "prefix for the injected value (e.g. \"Bearer \")")
+	fallback := fs.String("fallback", "", "one optional fallback upstream, tried only when the primary is unusable")
+	fbHeader := fs.String("fallback-auth-header", "", "credential header to inject at the fallback")
+	fbEnv := fs.String("fallback-auth-env", "", "gateway env var holding the fallback's credential")
+	fbPrefix := fs.String("fallback-auth-prefix", "", "prefix for the fallback's injected value")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -122,6 +133,8 @@ func addRoute(ctx context.Context, st *store.Store, args []string) error {
 		Timeout: *timeout, RetryMax: *retries, HedgeEnabled: *hedge, HedgeDelay: *hedgeDelay,
 		RequiredScope: *scope, UpstreamAuthHeader: *authHeader, UpstreamAuthEnv: *authEnv,
 		UpstreamAuthPrefix: *authPrefix,
+		FallbackUpstream:   *fallback, FallbackAuthHeader: *fbHeader,
+		FallbackAuthEnv: *fbEnv, FallbackAuthPrefix: *fbPrefix,
 	}
 	if err := st.AddRoute(ctx, spec); err != nil {
 		return err
@@ -130,7 +143,56 @@ func addRoute(ctx context.Context, st *store.Store, args []string) error {
 	if *authHeader != "" {
 		suffix = fmt.Sprintf(" (injects %s from $%s)", *authHeader, *authEnv)
 	}
+	if *fallback != "" {
+		suffix += fmt.Sprintf(", falling back to %s", *fallback)
+	}
 	fmt.Printf("route %s%s -> %s%s\n", *tenant, *prefix, *upstream, suffix)
+	return nil
+}
+
+// setFallback points an existing route at one fallback upstream.
+//
+// The upstream and its credential source are set together, because a fallback
+// left pointing at a new provider with the previous provider's env var would
+// send one provider's key to another.
+func setFallback(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("set-fallback", flag.ExitOnError)
+	route := fs.Int64("route", 0, "route id (see `tollgate-admin list`)")
+	upstream := fs.String("upstream", "", "fallback upstream base URL")
+	authHeader := fs.String("auth-header", "", "credential header to inject at the fallback")
+	authEnv := fs.String("auth-env", "", "gateway env var holding the fallback's credential")
+	authPrefix := fs.String("auth-prefix", "", "prefix for the injected value")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *route == 0 || *upstream == "" {
+		return fmt.Errorf("set-fallback needs -route and -upstream")
+	}
+	spec := store.FallbackSpec{
+		Upstream: *upstream, AuthHeader: *authHeader,
+		AuthEnv: *authEnv, AuthPrefix: *authPrefix,
+	}
+	if err := st.SetRouteFallback(ctx, *route, spec); err != nil {
+		return err
+	}
+	fmt.Printf("route %d falls back to %s\n", *route, *upstream)
+	return nil
+}
+
+// clearFallback returns a route to a single upstream.
+func clearFallback(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("clear-fallback", flag.ExitOnError)
+	route := fs.Int64("route", 0, "route id (see `tollgate-admin list`)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *route == 0 {
+		return fmt.Errorf("clear-fallback needs -route")
+	}
+	if err := st.SetRouteFallback(ctx, *route, store.FallbackSpec{}); err != nil {
+		return err
+	}
+	fmt.Printf("route %d has a single upstream again\n", *route)
 	return nil
 }
 
