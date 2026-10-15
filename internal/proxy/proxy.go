@@ -245,10 +245,8 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 		if attempt > 0 {
 			p.metrics.Retries.Inc()
 			backoff := p.retry.Backoff(attempt)
-			select {
-			case <-r.Context().Done():
-				return nil, nil, r.Context().Err()
-			case <-time.After(backoff):
+			if err := waitForRetry(r.Context(), backoff); err != nil {
+				return nil, nil, err
 			}
 		}
 
@@ -279,6 +277,20 @@ func (p *Proxy) doWithRetries(r *http.Request, route *store.Route, body []byte, 
 		return resp, cancel, nil
 	}
 	return nil, nil, fmt.Errorf("all %d attempts failed: %w", attempts, lastErr)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
 }
 
 // recordAttemptFailure records the two upstream failures that make up a

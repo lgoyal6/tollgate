@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,39 +16,89 @@ import (
 	"github.com/lgoyal6/tollgate/internal/store"
 )
 
-func TestClientCancellationDuringRetryBackoffDoesNotStartAnotherAttempt(t *testing.T) {
-	firstResponse := make(chan struct{})
-	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls.Add(1) == 1 {
-			defer close(firstResponse)
-		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer upstream.Close()
+type retryWaitContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
 
-	p := testProxy(t, Options{})
-	p.retry = resilience.RetryPolicy{BaseDelay: 250 * time.Millisecond, MaxDelay: 250 * time.Millisecond}
-	route := routeTo(t, upstream.URL, func(r *store.Route) { r.RetryMax = 3 })
+func (c *retryWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
+}
+
+func TestRetryWaitStopsPromptlyWhenCancelledInsideBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "http://gw.example/api/resource", strings.NewReader(""))
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = send(p, route, req.WithContext(ctx))
-	}()
+	defer cancel()
+	observed := &retryWaitContext{Context: ctx, entered: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- waitForRetry(observed, time.Hour) }()
 	select {
-	case <-firstResponse:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first upstream attempt did not return")
+	case <-observed.entered:
+	case <-time.After(time.Second):
+		t.Fatal("retry wait never consulted cancellation")
 	}
 	cancel()
 	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("proxy did not stop after cancellation")
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("wait error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled backoff did not stop promptly")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("upstream saw %d attempts after client cancellation, want one", got)
+}
+
+type retryTransport func(*http.Request) (*http.Response, error)
+
+func (f retryTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type retryResponseBody struct {
+	io.Reader
+	cancel context.CancelFunc
+}
+
+func (b retryResponseBody) Close() error {
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return nil
+}
+
+func TestClientCancellationDuringRetryBackoffDoesNotStartAnotherAttempt(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "uncancelled_retry_succeeds", true: "cancel_before_backoff"}[cancelled], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var calls atomic.Int32
+			p := testProxy(t, Options{})
+			p.retry = resilience.RetryPolicy{BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+			p.transport = retryTransport(func(_ *http.Request) (*http.Response, error) {
+				code := http.StatusOK
+				var onClose context.CancelFunc
+				if calls.Add(1) == 1 {
+					code = http.StatusServiceUnavailable
+					if cancelled {
+						onClose = cancel
+					}
+				}
+				// Count every dispatch, including one a default transport might
+				// suppress before reaching a socket with a cancelled context.
+				return &http.Response{StatusCode: code, Header: make(http.Header), Body: retryResponseBody{Reader: strings.NewReader("body"), cancel: onClose}}, nil
+			})
+			route := routeTo(t, "http://upstream.example", func(r *store.Route) { r.RetryMax = 1 })
+			req := httptest.NewRequest(http.MethodGet, "http://gw.example/api/resource", nil).WithContext(ctx)
+			rec, info := send(p, route, req)
+			want := int32(2)
+			if cancelled {
+				want = 1
+			}
+			if calls.Load() != want || info.Attempts != int(want) {
+				t.Fatalf("transport calls=%d proxy attempts=%d want=%d", calls.Load(), info.Attempts, want)
+			}
+			if !cancelled && rec.Code != http.StatusOK {
+				t.Fatalf("uncancelled retry status=%d", rec.Code)
+			}
+		})
 	}
 }
