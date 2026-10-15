@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -252,6 +253,58 @@ func TestHoldSurvivesAGatewayCrash(t *testing.T) {
 		t.Fatalf("settle after restart: %v", err)
 	}
 	assertNoDrift(t, l)
+}
+
+func TestReservationSurvivesProcessCrash(t *testing.T) {
+	pool := testPool(t)
+	limit := usd(50)
+	tenant, l := newTenant(t, pool, &limit)
+	requestID := "crash-reservation"
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBudgetCrashAfterReserveHelper$")
+	cmd.Env = append(os.Environ(),
+		"TOLLGATE_BUDGET_CRASH_HELPER=1",
+		"TOLLGATE_BUDGET_CRASH_TENANT="+tenant,
+		"TOLLGATE_BUDGET_CRASH_REQUEST="+requestID,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("crash helper: %v\n%s", err, output)
+	}
+
+	status, err := l.Status(context.Background(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Reserved != usd(7) {
+		t.Fatalf("reservation after helper process exit = %d, want %d", status.Reserved, usd(7))
+	}
+	open, err := l.OpenOlderThan(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range open {
+		if entry.TenantID == tenant && entry.RequestID == requestID && entry.State == budget.StateReserved {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("committed reservation was not discoverable after helper process exit")
+	}
+	assertNoDrift(t, l)
+}
+
+func TestBudgetCrashAfterReserveHelper(t *testing.T) {
+	if os.Getenv("TOLLGATE_BUDGET_CRASH_HELPER") != "1" {
+		t.Skip("subprocess helper")
+	}
+	pool := testPool(t)
+	_, err := budget.New(pool).Reserve(context.Background(), os.Getenv("TOLLGATE_BUDGET_CRASH_TENANT"), os.Getenv("TOLLGATE_BUDGET_CRASH_REQUEST"), usd(7), "crash-test")
+	if err != nil {
+		t.Fatalf("reserve before process exit: %v", err)
+	}
+	os.Exit(0) // Exit without running cleanup, as a crashed gateway process would.
 }
 
 // An uncertain hold is not terminal: a provider reconciliation or an operator can

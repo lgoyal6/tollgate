@@ -261,6 +261,40 @@ func TestProxyDoesNotRetryPOST(t *testing.T) {
 	}
 }
 
+func TestProxyDoesNotReplayAcceptedPOSTAfterTimeout(t *testing.T) {
+	var effects atomic.Int32
+	lateResponse := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		effects.Add(1) // the upstream accepted and applied the operation
+		<-time.After(80 * time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+		close(lateResponse)
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := testProxy(t, Options{})
+	route := routeTo(t, upstream.URL, func(r *store.Route) {
+		r.Timeout = 25 * time.Millisecond
+		r.RetryMax = 3
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/charge", strings.NewReader(`{"amount":42}`))
+	rec, info := send(p, route, req)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504", rec.Code)
+	}
+	select {
+	case <-lateResponse:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not finish its late response")
+	}
+	if got := effects.Load(); got != 1 {
+		t.Errorf("accepted upstream effects = %d, want one", got)
+	}
+	if info.Attempts != 1 {
+		t.Errorf("attempts = %d, want one for POST", info.Attempts)
+	}
+}
+
 func TestProxyDoesNotRetryNonRetryableStatus(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
