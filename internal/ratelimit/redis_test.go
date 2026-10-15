@@ -10,7 +10,9 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +37,126 @@ func newTestRedisLimiter(t *testing.T) *RedisLimiter {
 	}
 	t.Cleanup(func() { client.Close() })
 	return NewRedisLimiter(client)
+}
+
+func TestRedisLimiterReturnsErrorWhenRedisIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	client := redis.NewClient(&redis.Options{Addr: addr, DialTimeout: 50 * time.Millisecond, ReadTimeout: 50 * time.Millisecond, WriteTimeout: 50 * time.Millisecond, MaxRetries: 0})
+	defer client.Close()
+
+	decision, err := NewRedisLimiter(client).Allow(context.Background(), "unavailable", Policy{Algorithm: store.AlgoTokenBucket, Rate: 1, Burst: 1}, "request")
+	if err == nil {
+		t.Fatalf("Allow returned decision %+v without Redis", decision)
+	}
+	if decision.Allowed {
+		t.Fatalf("unavailable Redis admitted a request: %+v", decision)
+	}
+}
+
+func TestRedisLimiterScriptsUseRedisServerTime(t *testing.T) {
+	for name, source := range map[string]string{"token bucket": tokenBucketSrc, "sliding window": slidingWindowSrc} {
+		if !strings.Contains(source, "redis.call('TIME')") {
+			t.Errorf("%s script does not use the Redis server clock", name)
+		}
+	}
+}
+
+func TestRedisLimiterRecoversAfterScriptCacheFlush(t *testing.T) {
+	l := newTestRedisLimiter(t)
+	ctx := context.Background()
+	policy := Policy{Algorithm: store.AlgoTokenBucket, Rate: 1, Burst: 2}
+	if _, err := l.Allow(ctx, uniqueTenant(t), policy, "before-flush"); err != nil {
+		t.Fatalf("initial Allow: %v", err)
+	}
+	if err := l.client.ScriptFlush(ctx).Err(); err != nil {
+		t.Fatalf("SCRIPT FLUSH: %v", err)
+	}
+	if _, err := l.Allow(ctx, uniqueTenant(t), policy, "after-flush"); err != nil {
+		t.Fatalf("Allow after server script-cache loss: %v", err)
+	}
+}
+
+func TestRedisLimiterRecoversAfterIdleConnectionsAreKilled(t *testing.T) {
+	l := newTestRedisLimiter(t)
+	ctx := context.Background()
+	policy := Policy{Algorithm: store.AlgoTokenBucket, Rate: 1, Burst: 2}
+	if _, err := l.Allow(ctx, uniqueTenant(t), policy, "before-kill"); err != nil {
+		t.Fatalf("initial Allow: %v", err)
+	}
+	admin := redis.NewClient(&redis.Options{Addr: os.Getenv("TOLLGATE_TEST_REDIS")})
+	defer admin.Close()
+	connectionID, err := l.client.Do(ctx, "CLIENT", "ID").Int64()
+	if err != nil {
+		t.Fatalf("get pooled connection id: %v", err)
+	}
+	killed, err := admin.Do(ctx, "CLIENT", "KILL", "ID", connectionID).Int()
+	if err != nil {
+		t.Fatalf("kill pooled Redis connections: %v", err)
+	}
+	if killed == 0 {
+		t.Fatal("Redis did not close any pooled client connections")
+	}
+	if _, err := l.Allow(ctx, uniqueTenant(t), policy, "after-kill"); err != nil {
+		t.Fatalf("Allow after Redis closed pooled connections: %v", err)
+	}
+}
+
+func TestRedisLimiterThreeReplicasPreserveTwoTenantBursts(t *testing.T) {
+	first := newTestRedisLimiter(t)
+	clients := []*RedisLimiter{first}
+	for range 2 {
+		client := redis.NewClient(&redis.Options{Addr: os.Getenv("TOLLGATE_TEST_REDIS")})
+		t.Cleanup(func() { client.Close() })
+		clients = append(clients, NewRedisLimiter(client))
+	}
+	tenants := []struct {
+		id    string
+		burst int64
+	}{
+		{id: uniqueTenant(t) + "-a", burst: 3},
+		{id: uniqueTenant(t) + "-b", burst: 5},
+	}
+	var admitted [2]atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, 60)
+	for replica, limiter := range clients {
+		for tenant := range tenants {
+			for request := range 10 {
+				wg.Add(1)
+				go func(replica, tenant, request int, limiter *RedisLimiter) {
+					defer wg.Done()
+					<-start
+					d, err := limiter.Allow(context.Background(), tenants[tenant].id,
+						Policy{Algorithm: store.AlgoTokenBucket, Rate: 0.000000001, Burst: tenants[tenant].burst},
+						fmt.Sprintf("%d-%d-%d", replica, tenant, request))
+					if err != nil {
+						errs <- err
+						return
+					}
+					if d.Allowed {
+						admitted[tenant].Add(1)
+					}
+				}(replica, tenant, request, limiter)
+			}
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("Redis Allow: %v", err)
+	}
+	for tenant, tc := range tenants {
+		if got := admitted[tenant].Load(); got != tc.burst {
+			t.Errorf("tenant %s admitted %d of 30 attempts, want exactly burst %d", tc.id, got, tc.burst)
+		}
+	}
 }
 
 func uniqueTenant(t *testing.T) string {

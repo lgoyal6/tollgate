@@ -159,3 +159,64 @@ func TestHedgeRespectsContextCancellation(t *testing.T) {
 		t.Errorf("err = %v, want DeadlineExceeded", res.Err)
 	}
 }
+
+type closeSignal struct{ closed chan struct{} }
+
+func (b closeSignal) Read([]byte) (int, error) { return 0, io.EOF }
+func (b closeSignal) Close() error {
+	close(b.closed)
+	return nil
+}
+
+func TestHedgeCancelsBothAttemptsAndClosesLateResponses(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan int, 2)
+	canceled := make(chan int, 2)
+	returnLate := make(chan struct{})
+	closed := []chan struct{}{make(chan struct{}), make(chan struct{})}
+
+	done := make(chan HedgeResult, 1)
+	go func() {
+		result, release := Hedge(ctx, 10*time.Millisecond, func(actx context.Context, attempt int) (*http.Response, error) {
+			started <- attempt
+			<-actx.Done()
+			canceled <- attempt
+			<-returnLate
+			return &http.Response{StatusCode: http.StatusOK, Body: closeSignal{closed: closed[attempt]}}, nil
+		})
+		release()
+		done <- result
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("both hedge attempts did not start")
+		}
+	}
+	cancel()
+	for range 2 {
+		select {
+		case <-canceled:
+		case <-time.After(time.Second):
+			t.Fatal("hedge did not cancel both attempt contexts")
+		}
+	}
+	select {
+	case result := <-done:
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", result.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hedge did not return after client cancellation")
+	}
+	close(returnLate)
+	for i, bodyClosed := range closed {
+		select {
+		case <-bodyClosed:
+		case <-time.After(time.Second):
+			t.Errorf("late response body %d was not closed", i)
+		}
+	}
+}
