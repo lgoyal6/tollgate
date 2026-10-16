@@ -12,7 +12,11 @@
 // declares $, state and friends. Two classic scripts sharing one scope is how
 // you get "identifier already declared" at load and a blank instrument.
 (() => {
-const GATEWAY = 'https://gateway-production-dcde.up.railway.app';
+// Vercel forwards this path to the same echo-only Railway service. Keeping the
+// request same-origin avoids changing the gateway's browser-origin allow-list.
+const GATEWAY = location.hostname.endsWith('.vercel.app')
+  ? location.origin + '/live'
+  : 'https://gateway-production-dcde.up.railway.app';
 const DEMO_KEY = 'tg_k67b733b4b295_Ob2dTQIX15fDW8drcd87eXhWHs3sznUGJcBRzFGfivk';
 
 const el = (id) => document.getElementById(id);
